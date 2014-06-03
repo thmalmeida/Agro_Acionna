@@ -5,9 +5,6 @@
 
 #include <avr/wdt.h>
 
-#include "main.h"
-
-#include "Ultrasonic.h"
 #include "RTC/Time.h"
 #include "RTC/DS1307RTC.h"
 
@@ -18,19 +15,56 @@ const char *monthName[12] = {
 
 tmElements_t tm;
 uint8_t opcode;
-Ultrasonic ultrasonic(trigPin, echoPin); //iniciando a funcao e passando os pinos
+
+#define triacAux_on()		PORTD |=  (1<<2);	// Triac 1 is the starter
+#define triacAux_off()		PORTD &= ~(1<<2);
+#define triacStart_on()		PORTB |=  (1<<0);	// Triac 2 is aux
+#define triacStart_off()	PORTB &= ~(1<<0);
+
+#define echoPin 4 //Pino 13 recebe o pulso do echo
+#define trigPin 3 //Pino 12 envia o pulso para gerar o echo
+
+enum states01 {
+	redTime,
+	greenTime
+};
+
+uint8_t flag_LL = 0;
+uint8_t flag_MLL = 0;
+uint8_t flag_HL = 0;
+
+uint8_t flag_01 = 0;
+uint8_t flag_02 = 0;
+uint8_t flag_03 = 0;
+uint8_t motorStatus = 0;
+
+uint8_t HourOn  = 21;
+uint8_t MinOn   = 30;
+
+uint8_t HourOff = 6;
+uint8_t MinOff  = 0;
+
+volatile uint8_t flag_1s=1;
+
+enum states01 periodo = redTime;
 
 const uint8_t pkt_size = 10;
 uint8_t pkt_Tx[pkt_size], pkt_Rx[pkt_size];
 uint8_t k, rLength, j;
 char aux[3], buffer[40], inChar, sInstr[20];
+char sInstrBluetooth[30];
 
 uint8_t enableSend = 0;
-uint8_t enableProcess = 0;
+uint8_t enableDecode = 0;
 uint8_t enableTranslate = 0;
 uint8_t flagSync = 0;
 uint8_t countSync = 0;
 uint8_t flag_sendContinuously = 0;
+uint8_t flag_reset = 0;
+
+uint8_t j2 = 0;
+uint8_t flag_frameStartBT = 0;
+uint8_t enableTranslate_Bluetooth = 0;
 
 int distance=0;
 
@@ -42,6 +76,8 @@ uint8_t dayLog_ON[nLog], monthLog_ON[nLog], YearLog_ON[nLog];
 uint8_t dayLog_OFF[nLog], monthLog_OFF[nLog], YearLog_OFF[nLog];
 int distanceLog_ON[nLog], distanceLog_OFF[nLog];
 
+uint16_t levelSensorLL, levelSensorMLL, levelSensorMLH, levelSensorHL;
+uint16_t levelSensorLL_d, levelSensorMLL_d, levelSensorMLH_d, levelSensorHL_d;
 
 void print2digits(int number)
 {
@@ -96,40 +132,68 @@ void clockSync_PC()
 //	}
 //
 }
-int levelCheck()
+void init_WDT()
 {
-	//seta o pino 12 com um pulso baixo "LOW" ou desligado ou ainda 0
-	digitalWrite(trigPin, LOW);
-	// delay de 2 microssegundos
-	delayMicroseconds(2);
-	//seta o pino 12 com pulso alto "HIGH" ou ligado ou ainda 1
-	digitalWrite(trigPin, HIGH);
-	//delay de 10 microssegundos
-	delayMicroseconds(10);
-	//seta o pino 12 com pulso baixo novamente
-	digitalWrite(trigPin, LOW);
-	// funcao Ranging, faz a conversao do tempo de
-	//resposta do echo em centimetros, e armazena
-	//na variavel distancia
-	int distancia = (ultrasonic.Ranging(CM));
+//	cli();
+//	wdt_reset();
+//	/* Clear WDRF in MCUSR */
+//	MCUSR &= ~(1<<WDRF);
+//	/* Write logical one to WDCE and WDE */
+//	/* Keep old prescaler setting to prevent unintentional time-out */
+//	WDTCSR |= (1<<WDCE) | (1<<WDE);
+//	/* Turn off WDT */
+//	WDTCSR = 0x00;
+//	sei();
 
-//	sprintf(buffer,"D = %3.d cm",distancia);
-//	Serial.print(buffer);
 
-	return distancia;
+
+	// Configuring to enable only Reset System if occurs 4 s timeout
+//	WDTCSR <== WDIF WDIE WDP3 WDCE WDE WDP2 WDP1 WDP0
+//	WDTCSR |=  (1<<WDCE) | (1<<WDE);	// Enable Watchdog Timer
+//	WDTCSR &= ~(1<<WDIE);				// Disable interrupt
+//
+//	WDTCSR |=  (1<<WDP3);				// 512k (524288) Cycles, 4.0s
+//	WDTCSR &= ~(1<<WDP2);
+//	WDTCSR &= ~(1<<WDP1);
+//	WDTCSR &= ~(1<<WDP0);
+
+//	WDTCSR |=  (1<<WDCE);
+//	WDTCSR = 0b00111000;
+
+//	wdt_enable(WDTO_8S);
+	// WDT enable
+
+	wdt_enable(WDTO_8S);
 }
-void init_wdt()
+void init_ADC()
 {
-	cli();
-	wdt_reset();
-	/* Clear WDRF in MCUSR */
-	MCUSR &= ~(1<<WDRF);
-	/* Write logical one to WDCE and WDE */
-	/* Keep old prescaler setting to prevent unintentional time-out */
-	WDTCSR |= (1<<WDCE) | (1<<WDE);
-	/* Turn off WDT */
-	WDTCSR = 0x00;
-	sei();
+//	ADCSRA ==> ADEN ADSC ADATE ADIF ADIE ADPS2 ADPS1 ADPS0
+	ADCSRA |= (1<<ADPS2) | (1<<ADPS1) | (1<<ADPS0);	// Set 128 division clock
+	ADCSRA |= (1<<ADEN); 		// Enable module
+
+//	ADCSRB ==>	–	ACME	–	–	MUX5	ADTS2	ADTS1	ADTS0
+	ADCSRB &= ~(1<<ADTS2);		// Free running mode.
+	ADCSRB &= ~(1<<ADTS1);
+	ADCSRB &= ~(1<<ADTS0);
+
+//	ADMUX ==> REFS1 REFS0 ADLAR MUX4 MUX3 MUX2 MUX1 MUX0
+//	ADMUX |=  (1<<REFS0);		// Internal 1.1V reference
+//	ADMUX |=  (1<<REFS1);
+
+	ADMUX &=  ~(1<<REFS1);		//AVCC with external capacitor at AREF pin
+	ADMUX |=   (1<<REFS0);
+
+	ADMUX &= ~(1<<ADLAR);		// Right adjustment. To ADCL register.
+
+//	ADMUX &= ~(1<<MUX3);		// Select ADC0
+//	ADMUX &= ~(1<<MUX2);
+//	ADMUX &= ~(1<<MUX1);
+//	ADMUX &= ~(1<<MUX0);
+
+//	DDRC &= ~(1<<PC0);
+//	DDRC &= ~(1<<PC1);
+//	DDRC &= ~(1<<PC2);
+
 }
 void init_Timer1_1Hz()
 {
@@ -190,6 +254,7 @@ void stop_pwm2()
 //     Turn Red Led off.
 	PORTD &= ~(1 << PD2);
 }
+
 void motor_start()
 {
 	triacStart_on();
@@ -256,6 +321,70 @@ void motor_stop()
 	YearLog_OFF[0] = tm.Year;
 	distanceLog_OFF[0] = distance;
 }
+
+void sensorRead_Level()
+{
+	uint8_t low, high;
+	uint16_t value;
+	const uint16_t reference = 300;
+
+	ADMUX &= ~(1<<MUX3);							// Select ADC0
+	ADMUX &= ~(1<<MUX2);
+	ADMUX &= ~(1<<MUX1);
+	ADMUX &= ~(1<<MUX0);
+
+	ADCSRA |= (1<<ADSC);				// Start conversion;
+	while (bit_is_set(ADCSRA, ADSC));	// wait until conversion done;
+
+	low  = ADCL;
+	high = ADCH;
+	value = (high << 8) | low;
+	levelSensorLL_d = value;
+
+	if(value<reference)
+		levelSensorLL = 1;
+	else
+		levelSensorLL = 0;
+
+
+	ADMUX &= ~(1<<MUX3);							// Select ADC1
+	ADMUX &= ~(1<<MUX2);
+	ADMUX &= ~(1<<MUX1);
+	ADMUX |=  (1<<MUX0);
+
+	ADCSRA |= (1<<ADSC);				// Start conversion;
+	while (bit_is_set(ADCSRA, ADSC));	// wait until conversion done;
+
+	low  = ADCL;
+	high = ADCH;
+	value = (high << 8) | low;
+	levelSensorMLL_d = value;
+
+	if(value<reference)
+		levelSensorMLL = 1;
+	else
+		levelSensorMLL = 0;
+
+
+	ADMUX &= ~(1<<MUX3);							// Select ADC2
+	ADMUX &= ~(1<<MUX2);
+	ADMUX |=  (1<<MUX1);
+	ADMUX &= ~(1<<MUX0);
+
+	ADCSRA |= (1<<ADSC);				// Start conversion;
+	while (bit_is_set(ADCSRA, ADSC));	// wait until conversion done;
+
+	low  = ADCL;
+	high = ADCH;
+	value = (high << 8) | low;
+	levelSensorHL_d = value;
+
+	if(value<reference)
+		levelSensorHL = 1;
+	else
+		levelSensorHL = 0;
+}
+
 void periodVerify0()
 {
 	if (((tm.Hour == HourOn) && (tm.Minute >= MinOn)) || (tm.Hour > HourOn)
@@ -263,8 +392,8 @@ void periodVerify0()
 			|| ((tm.Hour == HourOff) && (tm.Minute < MinOff)))
 	{
 		periodo = greenTime;
-		flag04 = 1;
-		flag05 = 0;
+		flag_02 = 1;
+		flag_03 = 0;
 	}
 
 	if (((tm.Hour == HourOff) && (tm.Minute >= MinOff))
@@ -272,29 +401,29 @@ void periodVerify0()
 			|| ((tm.Hour == HourOn) && (tm.Minute < MinOn)))
 	{
 		periodo = redTime;
-		flag04 = 0;
-		flag05 = 1;
+		flag_02 = 0;
+		flag_03 = 1;
 	}
 }
 void periodVerify1()
 {
-	if (!flag04)
+	if (!flag_02)
 	{
 		if ((tm.Hour == HourOn) && (tm.Minute == MinOn))
 		{
 			periodo = greenTime;
-			flag04 = 1;
-			flag05 = 0;
+			flag_02 = 1;
+			flag_03 = 0;
 		}
 	}
 
-	if (!flag05)
+	if (!flag_03)
 	{
 		if ((tm.Hour == HourOff) && (tm.Minute == MinOff))
 		{
 			periodo = redTime;
-			flag04 = 0;
-			flag05 = 1;
+			flag_02 = 0;
+			flag_03 = 1;
 		}
 	}
 }
@@ -304,33 +433,53 @@ void motorDecision()
 	{
 	case redTime:
 
-		if (!flag03)
+		if (!flag_01)
 		{
 			motor_stop();
-			flag01 = 0;
-			flag03 = 1;
+			flag_01 = 1;
+
+			flag_MLL = 0;
+			flag_LL = 0;
 		}
 
 		break;
 
 	case greenTime:
 
+		if(levelSensorMLL)
+		{
+			if(!flag_MLL)
+			{
+				flag_MLL = 1;
+				flag_LL = 0;
+				flag_01 = 0;
+				motor_start();
+			}
+		}
+
+		if(!levelSensorLL)
+		{
+			if(!flag_LL)
+			{
+				flag_LL = 1;
+				flag_MLL = 0;
+				flag_01 = 0;
+				motor_stop();
+			}
+		}
+
+
 //		if (distance)
 //		{
-			// A distância do do sensor até a parte de cima da valvula é de 253cm.
+//			// A distância do do sensor até a parte de cima da valvula é de 253cm.
 //			if (distance <= distMin)
 //			{
-				if (!flag01)
-				{
-					motor_start();
-					flag01 = 1;
-					flag02 = 0;
-
-					flag03 = 0;
-
-				}
+//				if (!flag01)
+//				{
+//					motor_start();
+//				}
 //			}
-
+//
 //			if (distance >= distMax)
 //			{
 //				if (!flag02)
@@ -349,11 +498,94 @@ void motorDecision()
 		break;
 	}
 }
+
+void summary_Print(uint8_t opt)
+{
+	switch (opt)
+	{
+		case 0:
+			sprintf(buffer,"Time: %.2d:%.2d:%.2d, %.2d/%.2d/%d",tm.Hour, tm.Minute, tm.Second, tm.Day, tm.Month, tmYearToCalendar(tm.Year));
+			Serial.print(buffer);
+
+			sprintf(buffer," Uptime: %.2d:%.2d:%.2d, %d day(s), %d month(s), %d year(s)", hour(), minute(), second(), day()-1, month()-1, year()-1970);
+			Serial.println(buffer);
+
+			sprintf(buffer," Per.: %d, Motor: %d",periodo, motorStatus);
+			Serial.println(buffer);
+			break;
+
+		case 1:
+			int i;
+			if(motorStatus)
+			{
+				for(i=(nLog-1);i>=0;i--)
+				{
+					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_OFF[i], minuteLog_OFF[i], secondLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i], tmYearToCalendar(YearLog_OFF[i]), distanceLog_OFF[i]);
+					Serial.println(buffer);
+
+					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_ON[i], minuteLog_ON[i], secondLog_ON[i], dayLog_ON[i], monthLog_ON[i], tmYearToCalendar(YearLog_ON[i]), distanceLog_ON[i]);
+					Serial.println(buffer);
+				}
+			}
+			else
+			{
+				for(i=(nLog-1);i>=0;i--) //	for(i=0;i<nLog;i++)
+				{
+					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_ON[i], minuteLog_ON[i], secondLog_ON[i], dayLog_ON[i], monthLog_ON[i], tmYearToCalendar(YearLog_ON[i]), distanceLog_ON[i]);
+					Serial.println(buffer);
+
+					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_OFF[i], minuteLog_OFF[i], secondLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i], tmYearToCalendar(YearLog_OFF[i]), distanceLog_OFF[i]);
+					Serial.println(buffer);
+				}
+			}
+			break;
+
+		case 3:
+			sprintf(buffer,"Motor: %d, Time: %.2d:%.2d:%.2d",motorStatus, tm.Hour, tm.Minute, tm.Second);
+			Serial.println(buffer);
+
+			break;
+
+		case 4:
+			sprintf(buffer,"LL:%d, MLL:%d, HL:%d ",levelSensorLL, levelSensorMLL, levelSensorHL);
+			Serial.println(buffer);
+
+			sprintf(buffer,"LL:%d, MLL:%d, HL:%d",levelSensorLL_d, levelSensorMLL_d, levelSensorHL_d);
+			Serial.println(buffer);
+
+			break;
+
+		case 9:
+			sprintf(buffer,"Error!");
+			Serial.println(buffer);
+			break;
+
+		default:
+
+			sprintf(buffer,"Comando nao implementado!");
+			Serial.println(buffer);
+			break;
+	}
+}
+
 void refreshVariables()
 {
-	if (flagSummary)
+	if (flag_1s)
 	{
-		flagSummary = 0;
+		if(flag_sendContinuously)
+		{
+			summary_Print(4);
+		}
+
+		flag_1s = 0;
+
+		sensorRead_Level();
+
+		if(flag_reset)
+		{
+			wdt_enable(WDTO_15MS);
+			_delay_ms(100);
+		}
 
 //		distance = levelCheck();
 //		if(flag_sendContinuously == 1)
@@ -365,13 +597,179 @@ void refreshVariables()
 	}
 }
 
+void handleMessage()
+{
+/*	0;				Verificar detalhes - Detalhes simples (tempo).
+		00;				- Detalhes simples (tempo).
+
+
+		09;				- Reseta o sistema.
+
+	1123030;		Ajustar a hora para 12:30:30
+	201042014;		ajustar a data para 01 de abril de 2014
+	31;				ligar (31) ou desligar (30) o motor
+*/
+
+	// Tx - Transmitter
+	if(enableDecode)
+	{
+		enableDecode = 0;
+
+//		int i;
+//		for(i=0;i<rLength;i++)
+//		{
+//			Serial1.println(sInstr[i]);
+//		}
+//		for(i=0;i<rLength;i++)
+//		{
+//			Serial1.println(sInstr[i],HEX);
+//		}
+
+		// Getting the opcode
+		aux[0] = '0';
+		aux[1] = sInstr[0];
+		aux[2] = '\0';
+		opcode = (uint8_t) atoi(aux);
+//		Serial1.println("Got!");
+
+		switch (opcode)
+		{
+			case 0:		// Check status
+			{
+				aux[0] = '0';
+				aux[1] = sInstr[1];
+				aux[2] = '\0';
+				uint8_t statusCommand = 0;
+				statusCommand = (uint8_t) atoi(aux);
+
+				if(sInstr[2] == ';')
+				{
+					switch (statusCommand)
+					{
+						case 7:
+							flag_sendContinuously = 1;
+							break;
+
+						case 8:
+							flag_sendContinuously = 0;
+							break;
+
+						case 9:
+							flag_reset = 1;
+							break;
+
+						default:
+							summary_Print(statusCommand);
+							break;
+					}
+				}
+			}
+				break;
+
+//				if(sInstr[1] == ';')
+//				{
+//					summary_Print(0);
+//				}
+//				else
+//				{
+//					aux[0] = '0';
+//					aux[1] = sInstr[1];
+//					aux[2] = '\0';
+//					uint8_t statusCommand = (uint8_t) atoi(aux);
+//
+//					summary_Print(statusCommand);
+//				}
+//
+//				break;
+
+// -----------------------------------------------------------------
+			case 1:		// Set-up clock
+			{
+				// Getting the parameters
+				aux[0] = sInstr[1];
+				aux[1] = sInstr[2];
+				aux[2] = '\0';
+				tm.Hour = (uint8_t) atoi(aux);
+
+				aux[0] = sInstr[3];
+				aux[1] = sInstr[4];
+				aux[2] = '\0';
+				tm.Minute = (uint8_t) atoi(aux);
+
+				aux[0] = sInstr[5];
+				aux[1] = sInstr[6];
+				aux[2] = '\0';
+				tm.Second = (uint8_t) atoi(aux);
+
+				RTC.write(tm);
+
+				summary_Print(0);
+			}
+				break;
+
+// -----------------------------------------------------------------
+			case 2:		// Set-up date
+
+				// Getting the parameters
+				aux[0] = sInstr[1];
+				aux[1] = sInstr[2];
+				aux[2] = '\0';
+				tm.Day = (uint8_t) atoi(aux);
+
+				aux[0] = sInstr[3];
+				aux[1] = sInstr[4];
+				aux[2] = '\0';
+				tm.Month = (uint8_t) atoi(aux);
+
+				char aux2[5];
+				aux2[0] = sInstr[5];
+				aux2[1] = sInstr[6];
+				aux2[2] = sInstr[7];
+				aux2[3] = sInstr[8];
+				aux2[4] = '\0';
+				tm.Year = (uint8_t) (atoi(aux2)-1970);
+
+				RTC.write(tm);
+
+				summary_Print(0);
+
+				break;
+
+// -----------------------------------------------------------------
+			case 3:		// Set motor ON/OFF
+
+				uint8_t motorCommand;
+
+				aux[0] = '0';
+				aux[1] = sInstr[1];
+				aux[2] = '\0';
+				motorCommand = (uint8_t) atoi(aux);
+
+				if (motorCommand&&(!motorStatus))
+					motor_start();
+				else
+					motor_stop();
+
+				summary_Print(3);
+
+				break;
+
+// -----------------------------------------------------------------
+			default:
+				summary_Print(10);
+				break;
+		}
+		memset(sInstr,0,sizeof(sInstr));
+	}
+}
+
 void handleMessage_OLD()
 {
 	// Packet Processing
-	if (enableProcess)
+	if (enableDecode)
 	{
 		opcode = pkt_Rx[0];
-		enableProcess = 0;
+		enableDecode = 0;
 		switch (opcode)
 		{
 			case 0:
@@ -423,11 +821,8 @@ void handleMessage_OLD()
 		}
 	}
 }
-ISR(TIMER1_COMPA_vect)
-{
-	flagSummary = 1;
-}
-void comm_Bluetooth()
+
+void comm_Bluetooth_OLD()
 {
 	// Rx - Always listening
 	while((Serial.available()>0))	// Reading from serial
@@ -452,7 +847,7 @@ void comm_Bluetooth()
 
 		// Getting the opcode
 		aux[0] = '0';
-		aux[1] = sInstr[2];
+		aux[1] = sInstr[0];
 		aux[2] = '\0';
 		opcode = (uint8_t) atoi(aux);
 		Serial.println("Got!");
@@ -512,18 +907,18 @@ void comm_Bluetooth()
 			case 1:		// Set-up time
 
 				// Getting the parameters
-				aux[0] = sInstr[3];
-				aux[1] = sInstr[4];
+				aux[0] = sInstr[1];
+				aux[1] = sInstr[2];
 				aux[2] = '\0';
 				tm.Hour = (uint8_t) atoi(aux);
 
-				aux[0] = sInstr[5];
-				aux[1] = sInstr[6];
+				aux[0] = sInstr[3];
+				aux[1] = sInstr[4];
 				aux[2] = '\0';
 				tm.Minute = (uint8_t) atoi(aux);
 
-				aux[0] = sInstr[7];
-				aux[1] = sInstr[8];
+				aux[0] = sInstr[5];
+				aux[1] = sInstr[6];
 				aux[2] = '\0';
 				tm.Second = (uint8_t) atoi(aux);
 
@@ -534,21 +929,21 @@ void comm_Bluetooth()
 			case 2:		// Set-up start and stop time
 
 				// Getting the parameters
-				aux[0] = sInstr[3];
-				aux[1] = sInstr[4];
+				aux[0] = sInstr[1];
+				aux[1] = sInstr[2];
 				aux[2] = '\0';
 				tm.Day = (uint8_t) atoi(aux);
 
-				aux[0] = sInstr[5];
-				aux[1] = sInstr[6];
+				aux[0] = sInstr[3];
+				aux[1] = sInstr[4];
 				aux[2] = '\0';
 				tm.Month = (uint8_t) atoi(aux);
 
 				char aux2[5];
-				aux2[0] = sInstr[7];
-				aux2[1] = sInstr[8];
-				aux2[2] = sInstr[9];
-				aux2[3] = sInstr[10];
+				aux2[0] = sInstr[5];
+				aux2[1] = sInstr[6];
+				aux2[2] = sInstr[7];
+				aux2[3] = sInstr[8];
 				aux2[4] = '\0';
 				tm.Year = (uint8_t) (atoi(aux2)-1970);
 
@@ -560,7 +955,7 @@ void comm_Bluetooth()
 
 				uint8_t motorCommand;
 				aux[0] = '0';
-				aux[1] = sInstr[3];
+				aux[1] = sInstr[1];
 				aux[2] = '\0';
 				motorCommand = (uint8_t) atoi(aux);
 
@@ -575,7 +970,7 @@ void comm_Bluetooth()
 
 				uint8_t sendContinuously;
 				aux[0] = '0';
-				aux[1] = sInstr[3];
+				aux[1] = sInstr[1];
 				aux[2] = '\0';
 				sendContinuously = (uint8_t) atoi(aux);
 
@@ -601,7 +996,89 @@ void comm_Bluetooth()
 		}
 	}
 }
+void comm_Bluetooth()
+{
+	// Rx - Always listening
+//	uint8_t j2 =0;
+	while((Serial.available()>0))	// Reading from serial
+	{
+		inChar = Serial.read();
 
+		if(inChar=='$')
+		{
+			j2 = 0;
+			flag_frameStartBT = 1;
+//			Serial.println("Frame Start!");
+		}
+
+		if(flag_frameStartBT)
+			sInstrBluetooth[j2] = inChar;
+
+//		sprintf(buffer,"J= %d",j2);
+//		Serial.println(buffer);
+
+		j2++;
+
+		if(j2>=sizeof(sInstrBluetooth))
+		{
+			memset(sInstrBluetooth,0,sizeof(sInstrBluetooth));
+			j2=0;
+			Serial.println("ZEROU! sIntr BLuetooth Buffer!");
+		}
+
+		if(inChar==';')
+		{
+//			Serial.println("Encontrou ; !");
+			if(flag_frameStartBT)
+			{
+//				Serial.println("Frame Stop!");
+				flag_frameStartBT = 0;
+				rLength = j2;
+				j2 = 0;
+				enableTranslate_Bluetooth = 1;
+			}
+		}
+	}
+//	flag_frameStart = 0;
+
+	if(enableTranslate_Bluetooth)
+	{
+//		Serial.println("enableTranslate_Bluetooth");
+		enableTranslate_Bluetooth = 0;
+
+		char *pi0, *pf0;
+		pi0 = strchr(sInstrBluetooth,'$');
+		pf0 = strchr(sInstrBluetooth,';');
+
+		if(pi0!=NULL)
+		{
+			uint8_t l0=0;
+			l0 = pf0 - pi0;
+
+			int i;
+			for(i=1;i<=l0;i++)
+			{
+				sInstr[i-1] = pi0[i];
+//				Serial.write(sInstr[i-1]);
+			}
+			memset(sInstrBluetooth,0,sizeof(sInstrBluetooth));
+	//		Serial.println(sInstr);
+
+			enableDecode = 1;
+		}
+		else
+		{
+			Serial.println("Error!!");
+			Serial.write(pi0[0]);
+			Serial.write(pf0[0]);
+		}
+	}
+}
+
+ISR(TIMER1_COMPA_vect)
+{
+	flag_1s = 1;
+}
 
 int main()
 {
@@ -609,6 +1086,8 @@ int main()
 	init();
 	init_IO();
 	init_Timer1_1Hz();
+	init_ADC();
+	init_WDT();
 
 	Serial.begin(38400);
 	Serial.println("- Acionna Water Bomb -");
@@ -616,15 +1095,19 @@ int main()
 	while (1)
 	{
 		// Refrash all variables to compare and take decisions;
+		wdt_reset();
 		refreshVariables();
 
 		// Compare time of day and machine status;
+		wdt_reset();
 		motorDecision();
 
-		// Message Processing
-//		handleMessage();
-
 		// Bluetooth communication
+		wdt_reset();
 		comm_Bluetooth();
+
+		// Message Processing
+		wdt_reset();
+		handleMessage();
 	}
 }

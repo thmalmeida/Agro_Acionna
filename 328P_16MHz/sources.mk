@@ -32,5 +32,4 @@ SIZEDUMMY :=
 SUBDIRS := \
 . \
 RTC \
-RF24 \
 
