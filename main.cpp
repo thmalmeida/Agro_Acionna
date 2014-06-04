@@ -69,7 +69,7 @@ uint8_t enableTranslate_Bluetooth = 0;
 int distance=0;
 
 // Logs
-const uint8_t nLog = 10;
+const int nLog = 10;
 uint8_t hourLog_ON[nLog], minuteLog_ON[nLog], secondLog_ON[nLog];
 uint8_t hourLog_OFF[nLog], minuteLog_OFF[nLog], secondLog_OFF[nLog];
 uint8_t dayLog_ON[nLog], monthLog_ON[nLog], YearLog_ON[nLog];
@@ -260,24 +260,16 @@ void motor_start()
 	triacStart_on();
 	motorStatus = 1;
 
-	//	hourLog_ON[1] = hourLog_ON[0];
-	//	minuteLog_ON[1] = minuteLog_ON[0];
-	//	secondLog_ON[1] = secondLog_ON[0];
-	//	dayLog_ON[1] = dayLog_ON[0];
-	//	monthLog_ON[1] = monthLog_ON[0];
-	//	YearLog_ON[1] = YearLog_ON[0];
-	//	distanceLog_ON[1] = distanceLog_ON[0];
-
 	int i;
-	for(i=0;i<(nLog-1);i++)
+	for(i=(nLog-1);i>=0;i--)
 	{
-		hourLog_ON[i+1] = hourLog_ON[i];
-		minuteLog_ON[i+1] = minuteLog_ON[i];
-		secondLog_ON[i+1] = secondLog_ON[i];
-		dayLog_ON[i+1] = dayLog_ON[i];
-		monthLog_ON[i+1] = monthLog_ON[i];
-		YearLog_ON[i+1] = YearLog_ON[i];
-		distanceLog_ON[i+1] = distanceLog_ON[i];
+		hourLog_ON[i] = hourLog_ON[i-1];
+		minuteLog_ON[i] = minuteLog_ON[i-1];
+		secondLog_ON[i] = secondLog_ON[i-1];
+		dayLog_ON[i] = dayLog_ON[i-1];
+		monthLog_ON[i] = monthLog_ON[i-1];
+		YearLog_ON[i] = YearLog_ON[i-1];
+		distanceLog_ON[i] = distanceLog_ON[i-1];
 	}
 
 	hourLog_ON[0] = tm.Hour;
@@ -287,30 +279,23 @@ void motor_start()
 	monthLog_ON[0] = tm.Month;
 	YearLog_ON[0] = tm.Year;
 	distanceLog_ON[0] = distance;
+
 }
 void motor_stop()
 {
 	triacStart_off();
 	motorStatus = 0;
 
-//	hourLog_OFF[1] = hourLog_OFF[0];
-//	minuteLog_OFF[1] = minuteLog_OFF[0];
-//	secondLog_OFF[1] = secondLog_OFF[0];
-//	dayLog_OFF[1] = dayLog_OFF[0];
-//	monthLog_OFF[1] = monthLog_OFF[0];
-//	YearLog_OFF[1] = YearLog_OFF[0];
-//	distanceLog_OFF[1] = distanceLog_OFF[0];
-
 	int i;
-	for(i=0;i<(nLog-1);i++)
+	for(i=(nLog-1);i>=0;i--)
 	{
-		hourLog_OFF[i+1] = hourLog_OFF[i];
-		minuteLog_OFF[i+1] = minuteLog_OFF[i];
-		secondLog_OFF[i+1] = secondLog_OFF[i];
-		dayLog_OFF[i+1] = dayLog_OFF[i];
-		monthLog_OFF[i+1] = monthLog_OFF[i];
-		YearLog_OFF[i+1] = YearLog_OFF[i];
-		distanceLog_OFF[i+1] = distanceLog_OFF[i];
+		hourLog_OFF[i] = hourLog_OFF[i-1];
+		minuteLog_OFF[i] = minuteLog_OFF[i-1];
+		secondLog_OFF[i] = secondLog_OFF[i-1];
+		dayLog_OFF[i] = dayLog_OFF[i-1];
+		monthLog_OFF[i] = monthLog_OFF[i-1];
+		YearLog_OFF[i] = YearLog_OFF[i-1];
+		distanceLog_OFF[i] = distanceLog_OFF[i-1];
 	}
 
 	hourLog_OFF[0] = tm.Hour;
@@ -320,6 +305,7 @@ void motor_stop()
 	monthLog_OFF[0] = tm.Month;
 	YearLog_OFF[0] = tm.Year;
 	distanceLog_OFF[0] = distance;
+
 }
 
 void sensorRead_Level()
