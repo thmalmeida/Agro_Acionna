@@ -1,7 +1,10 @@
 #include <util/delay.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/eeprom.h>
+
 #include <Arduino.h>
+
 
 #include <avr/wdt.h>
 
@@ -21,17 +24,13 @@ uint8_t opcode;
 #define triacStart_on()		PORTB |=  (1<<0);	// Triac 2 is aux
 #define triacStart_off()	PORTB &= ~(1<<0);
 
-#define echoPin 4 //Pino 13 recebe o pulso do echo
-#define trigPin 3 //Pino 12 envia o pulso para gerar o echo
-
 enum states01 {
 	redTime,
 	greenTime
 };
+enum states01 periodo = redTime;
 
-uint8_t flag_LL = 0;
-uint8_t flag_MLL = 0;
-uint8_t flag_HL = 0;
+uint8_t flag_AwaysON = 0;
 
 uint8_t flag_01 = 0;
 uint8_t flag_02 = 0;
@@ -44,16 +43,18 @@ uint8_t MinOn   = 30;
 uint8_t HourOff = 6;
 uint8_t MinOff  = 0;
 
-volatile uint8_t flag_1s=1;
+volatile uint8_t flag_1s = 1;
 
-enum states01 periodo = redTime;
 
-const uint8_t pkt_size = 10;
-uint8_t pkt_Tx[pkt_size], pkt_Rx[pkt_size];
+//const uint8_t pkt_size = 10;
+//uint8_t pkt_Tx[pkt_size], pkt_Rx[pkt_size];
 uint8_t k, rLength, j;
 char aux[3], buffer[40], inChar, sInstr[20];
 char sInstrBluetooth[30];
 
+const uint8_t addr_stateMode = 1;
+
+uint8_t stateMode = 1;
 uint8_t enableSend = 0;
 uint8_t enableDecode = 0;
 uint8_t enableTranslate = 0;
@@ -66,15 +67,17 @@ uint8_t j2 = 0;
 uint8_t flag_frameStartBT = 0;
 uint8_t enableTranslate_Bluetooth = 0;
 
-int distance=0;
-
 // Logs
-const int nLog = 10;
-uint8_t hourLog_ON[nLog], minuteLog_ON[nLog], secondLog_ON[nLog];
-uint8_t hourLog_OFF[nLog], minuteLog_OFF[nLog], secondLog_OFF[nLog];
-uint8_t dayLog_ON[nLog], monthLog_ON[nLog], YearLog_ON[nLog];
-uint8_t dayLog_OFF[nLog], monthLog_OFF[nLog], YearLog_OFF[nLog];
-int distanceLog_ON[nLog], distanceLog_OFF[nLog];
+const int nLog = 20;
+uint8_t hourLog_ON[nLog], minuteLog_ON[nLog];
+uint8_t hourLog_OFF[nLog], minuteLog_OFF[nLog];
+uint8_t dayLog_ON[nLog], monthLog_ON[nLog];
+uint8_t dayLog_OFF[nLog], monthLog_OFF[nLog];
+//const int nLog = 15;
+//uint8_t hourLog_ON[nLog], minuteLog_ON[nLog], secondLog_ON[nLog];
+//uint8_t hourLog_OFF[nLog], minuteLog_OFF[nLog], secondLog_OFF[nLog];
+//uint8_t dayLog_ON[nLog], monthLog_ON[nLog], YearLog_ON[nLog];
+//uint8_t dayLog_OFF[nLog], monthLog_OFF[nLog], YearLog_OFF[nLog];
 
 uint16_t levelSensorLL, levelSensorMLL, levelSensorMLH, levelSensorHL;
 uint16_t levelSensorLL_d, levelSensorMLL_d, levelSensorMLH_d, levelSensorHL_d;
@@ -132,6 +135,7 @@ void clockSync_PC()
 //	}
 //
 }
+
 void init_WDT()
 {
 //	cli();
@@ -227,9 +231,6 @@ void init_IO()
 	// Set triac1, triac2 and led connected pins as output
 	DDRD |= (1 << 5); // Led!
 	DDRB |= (1 << 0); // Motor
-
-	pinMode(echoPin, INPUT); // define o pino 13 como entrada (recebe)
-	pinMode(trigPin, OUTPUT); // define o pino 12 como saida (envia)
 }
 void init_pwm2()
 {
@@ -257,55 +258,57 @@ void stop_pwm2()
 
 void motor_start()
 {
-	triacStart_on();
-	motorStatus = 1;
-
 	int i;
-	for(i=(nLog-1);i>=0;i--)
+	for(i=(nLog-1);i>0;i--)
 	{
 		hourLog_ON[i] = hourLog_ON[i-1];
 		minuteLog_ON[i] = minuteLog_ON[i-1];
-		secondLog_ON[i] = secondLog_ON[i-1];
+//		secondLog_ON[i] = secondLog_ON[i-1];
 		dayLog_ON[i] = dayLog_ON[i-1];
 		monthLog_ON[i] = monthLog_ON[i-1];
-		YearLog_ON[i] = YearLog_ON[i-1];
-		distanceLog_ON[i] = distanceLog_ON[i-1];
+//		YearLog_ON[i] = YearLog_ON[i-1];
 	}
 
 	hourLog_ON[0] = tm.Hour;
 	minuteLog_ON[0] = tm.Minute;
-	secondLog_ON[0] = tm.Second;
+//	secondLog_ON[0] = tm.Second;
 	dayLog_ON[0] = tm.Day;
 	monthLog_ON[0] = tm.Month;
-	YearLog_ON[0] = tm.Year;
-	distanceLog_ON[0] = distance;
+//	YearLog_ON[0] = tm.Year;
+
+//	flag_LL = 0;
+//	flag_MLL = 1;
+
+	motorStatus = 1;
+
+	triacStart_on();
 
 }
 void motor_stop()
 {
-	triacStart_off();
-	motorStatus = 0;
-
 	int i;
-	for(i=(nLog-1);i>=0;i--)
+	for(i=(nLog-1);i>0;i--)
 	{
 		hourLog_OFF[i] = hourLog_OFF[i-1];
 		minuteLog_OFF[i] = minuteLog_OFF[i-1];
-		secondLog_OFF[i] = secondLog_OFF[i-1];
+//		secondLog_OFF[i] = secondLog_OFF[i-1];
 		dayLog_OFF[i] = dayLog_OFF[i-1];
 		monthLog_OFF[i] = monthLog_OFF[i-1];
-		YearLog_OFF[i] = YearLog_OFF[i-1];
-		distanceLog_OFF[i] = distanceLog_OFF[i-1];
+//		YearLog_OFF[i] = YearLog_OFF[i-1];
 	}
 
 	hourLog_OFF[0] = tm.Hour;
 	minuteLog_OFF[0] = tm.Minute;
-	secondLog_OFF[0] = tm.Second;
+//	secondLog_OFF[0] = tm.Second;
 	dayLog_OFF[0] = tm.Day;
 	monthLog_OFF[0] = tm.Month;
-	YearLog_OFF[0] = tm.Year;
-	distanceLog_OFF[0] = distance;
+//	YearLog_OFF[0] = tm.Year;
 
+//	flag_LL = 1;
+//	flag_MLL = 0;
+
+	motorStatus = 0;
+	triacStart_off();
 }
 
 void sensorRead_Level()
@@ -413,77 +416,69 @@ void periodVerify1()
 		}
 	}
 }
-void motorDecision()
+void motorControl_bySensors()
+{
+	if(levelSensorMLL)
+	{
+		if(!motorStatus)
+		{
+			motor_start();
+		}
+	}
+
+	if(!levelSensorLL)
+	{
+		if(motorStatus)
+		{
+			motor_stop();
+		}
+	}
+}
+void motorPeriodDecision()
 {
 	switch (periodo)
 	{
 	case redTime:
-
-		if (!flag_01)
+		if(motorStatus)
 		{
 			motor_stop();
-			flag_01 = 1;
-
-			flag_MLL = 0;
-			flag_LL = 0;
 		}
-
 		break;
 
 	case greenTime:
-
-		if(levelSensorMLL)
-		{
-			if(!flag_MLL)
-			{
-				flag_MLL = 1;
-				flag_LL = 0;
-				flag_01 = 0;
-				motor_start();
-			}
-		}
-
-		if(!levelSensorLL)
-		{
-			if(!flag_LL)
-			{
-				flag_LL = 1;
-				flag_MLL = 0;
-				flag_01 = 0;
-				motor_stop();
-			}
-		}
-
-
-//		if (distance)
-//		{
-//			// A distância do do sensor até a parte de cima da valvula é de 253cm.
-//			if (distance <= distMin)
-//			{
-//				if (!flag01)
-//				{
-//					motor_start();
-//				}
-//			}
-//
-//			if (distance >= distMax)
-//			{
-//				if (!flag02)
-//				{
-//					motor_stop();
-//					flag01 = 0;
-//					flag02 = 1;
-//
-//					flag03 = 0;
-//				}
-//			}
-//		}
-		break;
-
-	default:
+		motorControl_bySensors();
 		break;
 	}
 }
+void process_Mode()
+{
+	switch (stateMode)
+	{
+		case 0:	// System Down!
+			if(!levelSensorLL)
+			{
+				if(motorStatus)
+				{
+					motor_stop();
+				}
+			}
+			break;
+
+		case 1:	// Night Working;
+			motorPeriodDecision();
+			break;
+
+		case 2:	// all Day Working;
+			motorControl_bySensors();
+			break;
+
+		default:
+			stateMode = 1;
+			Serial.println("Changed to Night Working!");
+			break;
+	}
+}
+
 
 void summary_Print(uint8_t opt)
 {
@@ -498,6 +493,27 @@ void summary_Print(uint8_t opt)
 
 			sprintf(buffer," Per.: %d, Motor: %d",periodo, motorStatus);
 			Serial.println(buffer);
+
+			switch (stateMode)
+			{
+				case 0:
+					strcpy(buffer," Modo: Desligado!");
+					break;
+
+				case 1:
+					strcpy(buffer," Modo: Liga a noite!");
+					break;
+
+				case 2:
+					strcpy(buffer," Modo: Ligado direto!");
+					break;
+
+				default:
+					strcpy(buffer," stateMode Error!");
+					break;
+			}
+			Serial.println(buffer);
+
 			break;
 
 		case 1:
@@ -506,10 +522,10 @@ void summary_Print(uint8_t opt)
 			{
 				for(i=(nLog-1);i>=0;i--)
 				{
-					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_OFF[i], minuteLog_OFF[i], secondLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i], tmYearToCalendar(YearLog_OFF[i]), distanceLog_OFF[i]);
+					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_OFF[i], minuteLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i]);
 					Serial.println(buffer);
 
-					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_ON[i], minuteLog_ON[i], secondLog_ON[i], dayLog_ON[i], monthLog_ON[i], tmYearToCalendar(YearLog_ON[i]), distanceLog_ON[i]);
+					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_ON[i], minuteLog_ON[i], dayLog_ON[i], monthLog_ON[i]);
 					Serial.println(buffer);
 				}
 			}
@@ -517,17 +533,17 @@ void summary_Print(uint8_t opt)
 			{
 				for(i=(nLog-1);i>=0;i--) //	for(i=0;i<nLog;i++)
 				{
-					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_ON[i], minuteLog_ON[i], secondLog_ON[i], dayLog_ON[i], monthLog_ON[i], tmYearToCalendar(YearLog_ON[i]), distanceLog_ON[i]);
+					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_ON[i], minuteLog_ON[i], dayLog_ON[i], monthLog_ON[i]);
 					Serial.println(buffer);
 
-					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_OFF[i], minuteLog_OFF[i], secondLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i], tmYearToCalendar(YearLog_OFF[i]), distanceLog_OFF[i]);
+					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_OFF[i], minuteLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i]);
 					Serial.println(buffer);
 				}
 			}
 			break;
 
 		case 3:
-			sprintf(buffer,"Motor: %d, Time: %.2d:%.2d:%.2d",motorStatus, tm.Hour, tm.Minute, tm.Second);
+			sprintf(buffer,"Motor: %d, Time: %.2d:%.2d:%.2d ",motorStatus, tm.Hour, tm.Minute, tm.Second);
 			Serial.println(buffer);
 
 			break;
@@ -558,42 +574,49 @@ void refreshVariables()
 {
 	if (flag_1s)
 	{
+		flag_1s = 0;
+
+		RTC.read(tm);
+		periodVerify0();
+		sensorRead_Level();
+
 		if(flag_sendContinuously)
 		{
 			summary_Print(4);
 		}
-
-		flag_1s = 0;
-
-		sensorRead_Level();
 
 		if(flag_reset)
 		{
 			wdt_enable(WDTO_15MS);
 			_delay_ms(100);
 		}
-
-//		distance = levelCheck();
-//		if(flag_sendContinuously == 1)
-//		{
-//			Serial.println(distance);
-//		}
-		RTC.read(tm);
-		periodVerify0();
 	}
+}
+void refreshStoredData()
+{
+	stateMode = eeprom_read_byte((uint8_t *)(addr_stateMode));
 }
 
 void handleMessage()
 {
-/*	0;				Verificar detalhes - Detalhes simples (tempo).
-		00;				- Detalhes simples (tempo).
+/*	$0x;				Verificar detalhes - Detalhes simples (tempo).
+		$00;				- Detalhes simples (tempo).
 
 
-		09;				- Reseta o sistema.
+		$09;				- Reseta o sistema.
 
-	1123030;		Ajustar a hora para 12:30:30
-	201042014;		ajustar a data para 01 de abril de 2014
-	31;				ligar (31) ou desligar (30) o motor
+	$1123030;		Ajustar a hora para 12:30:30
+
+	$201042014;		ajustar a data para 01 de abril de 2014
+
+	$3x;			Comando forçado de ligar/desligar.
+		$30;		Desliga;
+		$31;		Liga;
+
+	$6x;
+		$60; 		Sistema Desligado;
+		$61;		Liga somente à noite;
+		$62;		Sempre ligado.
 */
 
 	// Tx - Transmitter
@@ -620,6 +643,7 @@ void handleMessage()
 
 		switch (opcode)
 		{
+// -----------------------------------------------------------------
 			case 0:		// Check status
 			{
 				aux[0] = '0';
@@ -632,6 +656,12 @@ void handleMessage()
 				{
 					switch (statusCommand)
 					{
+						case 2:
+							sprintf(buffer,"$1%.2d%.2d%.2d",tm.Hour, tm.Minute, tm.Second);
+							Serial.println(buffer);
+//							Serial1.println(buffer);
+							break;
+
 						case 7:
 							flag_sendContinuously = 1;
 							break;
@@ -651,22 +681,6 @@ void handleMessage()
 				}
 			}
 				break;
-
-//				if(sInstr[1] == ';')
-//				{
-//					summary_Print(0);
-//				}
-//				else
-//				{
-//					aux[0] = '0';
-//					aux[1] = sInstr[1];
-//					aux[2] = '\0';
-//					uint8_t statusCommand = (uint8_t) atoi(aux);
-//
-//					summary_Print(statusCommand);
-//				}
-//
-//				break;
 
 // -----------------------------------------------------------------
 			case 1:		// Set-up clock
@@ -741,6 +755,20 @@ void handleMessage()
 				break;
 
 // -----------------------------------------------------------------
+			case 6:		// Set working mode
+
+				aux[0] = '0';
+				aux[1] = sInstr[1];
+				aux[2] = '\0';
+				stateMode = (uint8_t) atoi(aux);
+
+				eeprom_write_byte(( uint8_t *)(addr_stateMode), stateMode);
+
+				summary_Print(0);
+
+				break;
+
+// -----------------------------------------------------------------
 			default:
 				summary_Print(10);
 				break;
@@ -749,239 +777,6 @@ void handleMessage()
 	}
 }
 
-void handleMessage_OLD()
-{
-	// Packet Processing
-	if (enableDecode)
-	{
-		opcode = pkt_Rx[0];
-		enableDecode = 0;
-		switch (opcode)
-		{
-			case 0:
-				pkt_Tx[0] = 0;
-				pkt_Tx[1] = tm.Hour;
-				pkt_Tx[2] = tm.Minute;
-				pkt_Tx[3] = tm.Second;
-				pkt_Tx[4] = distance;
-				pkt_Tx[5] = periodo;
-		//			pkt_Tx[5] = motorStatus;
-		//			pkt_Tx[6] = HourOn;
-		//			pkt_Tx[7] = MinOn;
-		//			pkt_Tx[8] = HourOff;
-		//			pkt_Tx[9] = MinOff;
-				enableSend = 1;
-
-				break;
-
-			case 1:
-				setTime((int) pkt_Rx[1], (int) pkt_Rx[2], (int) pkt_Rx[3], 1, 1,
-						2014);
-				break;
-
-			case 2:
-				HourOn = pkt_Rx[1];
-				MinOn = pkt_Rx[2];
-				HourOff = pkt_Rx[3];
-				MinOff = pkt_Rx[4];
-
-				break;
-
-			case 3:
-				if (pkt_Rx[1])
-					motor_start();
-				else
-					motor_stop();
-				break;
-
-			case 4:
-				if(flag_sendContinuously)
-				{
-
-				}
-				break;
-
-
-			default:
-				break;
-		}
-	}
-}
-
-void comm_Bluetooth_OLD()
-{
-	// Rx - Always listening
-	while((Serial.available()>0))	// Reading from serial
-	{
-		inChar = Serial.read();
-		sInstr[k] = inChar;
-		k++;
-
-		if(inChar==';')
-		{
-			rLength = k;
-			k = 0;
-
-			enableTranslate = 1;
-		}
-	}
-
-	// Tx - Transmitter
-	if(enableTranslate)
-	{
-		enableTranslate = 0;
-
-		// Getting the opcode
-		aux[0] = '0';
-		aux[1] = sInstr[0];
-		aux[2] = '\0';
-		opcode = (uint8_t) atoi(aux);
-		Serial.println("Got!");
-
-		switch (opcode)
-		{
-			case 0:		// Check status
-
-				int i;
-				if(motorStatus)
-				{
-					for(i=(nLog-1);i>=0;i--)
-					{
-						sprintf(buffer,"Desligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_OFF[i], minuteLog_OFF[i], secondLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i], tmYearToCalendar(YearLog_OFF[i]), distanceLog_OFF[i]);
-						Serial.println(buffer);
-
-						sprintf(buffer,"Ligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_ON[i], minuteLog_ON[i], secondLog_ON[i], dayLog_ON[i], monthLog_ON[i], tmYearToCalendar(YearLog_ON[i]), distanceLog_ON[i]);
-						Serial.println(buffer);
-					}
-				}
-				else
-				{
-					for(i=(nLog-1);i>=0;i--) //	for(i=0;i<nLog;i++)
-					{
-						sprintf(buffer,"Ligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_ON[i], minuteLog_ON[i], secondLog_ON[i], dayLog_ON[i], monthLog_ON[i], tmYearToCalendar(YearLog_ON[i]), distanceLog_ON[i]);
-						Serial.println(buffer);
-
-						sprintf(buffer,"Desligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_OFF[i], minuteLog_OFF[i], secondLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i], tmYearToCalendar(YearLog_OFF[i]), distanceLog_OFF[i]);
-						Serial.println(buffer);
-					}
-				}
-
-				sprintf(buffer,"Uptime: %.2d:%.2d:%.2d, %d day(s), %d month(s), %d year(s)", hour(), minute(), second(), day()-1, month()-1, year()-1970);
-				Serial.println(buffer);
-
-				sprintf(buffer,"Time: %.2d:%.2d:%.2d, %.2d/%.2d/%d,  D= %.3d cm",tm.Hour, tm.Minute, tm.Second, tm.Day, tm.Month, tmYearToCalendar(tm.Year), distance);
-				Serial.print(buffer);
-
-				sprintf(buffer," Per.: %d, Motor: %d",periodo, motorStatus);
-				Serial.println(buffer);
-
-
-//				sprintf(buffer,"Ligou_01___: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",hourLog_ON[0], minuteLog_ON[0], secondLog_ON[0], dayLog_ON[0], monthLog_ON[0], tmYearToCalendar(YearLog_ON[0]), distanceLog_ON[0]);
-//				Serial.println(buffer);
-//
-//				sprintf(buffer,"Ligou_02___: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",hourLog_ON[1], minuteLog_ON[1], secondLog_ON[1], dayLog_ON[1], monthLog_ON[1], tmYearToCalendar(YearLog_ON[1]), distanceLog_ON[1]);
-//				Serial.println(buffer);
-//
-//				sprintf(buffer,"Desligou_01: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",hourLog_OFF[0], minuteLog_OFF[0], secondLog_OFF[0], dayLog_OFF[0], monthLog_OFF[0], tmYearToCalendar(YearLog_OFF[0]), distanceLog_OFF[0]);
-//				Serial.println(buffer);
-//
-//				sprintf(buffer,"Desligou_02: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",hourLog_OFF[1], minuteLog_OFF[1], secondLog_OFF[1], dayLog_OFF[1], monthLog_OFF[1], tmYearToCalendar(YearLog_OFF[1]), distanceLog_OFF[1]);
-//				Serial.println(buffer);
-
-				break;
-
-			case 1:		// Set-up time
-
-				// Getting the parameters
-				aux[0] = sInstr[1];
-				aux[1] = sInstr[2];
-				aux[2] = '\0';
-				tm.Hour = (uint8_t) atoi(aux);
-
-				aux[0] = sInstr[3];
-				aux[1] = sInstr[4];
-				aux[2] = '\0';
-				tm.Minute = (uint8_t) atoi(aux);
-
-				aux[0] = sInstr[5];
-				aux[1] = sInstr[6];
-				aux[2] = '\0';
-				tm.Second = (uint8_t) atoi(aux);
-
-				RTC.write(tm);
-
-				break;
-
-			case 2:		// Set-up start and stop time
-
-				// Getting the parameters
-				aux[0] = sInstr[1];
-				aux[1] = sInstr[2];
-				aux[2] = '\0';
-				tm.Day = (uint8_t) atoi(aux);
-
-				aux[0] = sInstr[3];
-				aux[1] = sInstr[4];
-				aux[2] = '\0';
-				tm.Month = (uint8_t) atoi(aux);
-
-				char aux2[5];
-				aux2[0] = sInstr[5];
-				aux2[1] = sInstr[6];
-				aux2[2] = sInstr[7];
-				aux2[3] = sInstr[8];
-				aux2[4] = '\0';
-				tm.Year = (uint8_t) (atoi(aux2)-1970);
-
-				RTC.write(tm);
-
-				break;
-
-			case 3:		// Set motor ON/OFF
-
-				uint8_t motorCommand;
-				aux[0] = '0';
-				aux[1] = sInstr[1];
-				aux[2] = '\0';
-				motorCommand = (uint8_t) atoi(aux);
-
-				if (motorCommand)
-					motor_start();
-				else
-					motor_stop();
-
-				break;
-
-			case 4:		// Set motor ON/OFF
-
-				uint8_t sendContinuously;
-				aux[0] = '0';
-				aux[1] = sInstr[1];
-				aux[2] = '\0';
-				sendContinuously = (uint8_t) atoi(aux);
-
-//				sprintf(buffer,"Ligou_%.2d: %.2d:%.2d:%.2d, %.2d/%.2d/%d D= %.3d cm",(i+1),hourLog_ON[i], minuteLog_ON[i], secondLog_ON[i], dayLog_ON[i], monthLog_ON[i], tmYearToCalendar(YearLog_ON[i]), distanceLog_ON[i]);
-				Serial.println("Entrou");
-
-				if(sendContinuously)
-				{
-					flag_sendContinuously = 1;
-					Serial.println("Entrou = 1");
-				}
-				else
-				{
-					flag_sendContinuously = 0;
-					Serial.println("Entrou = 0");
-				}
-
-				break;
-
-			default:
-				break;
-
-		}
-	}
-}
 void comm_Bluetooth()
 {
 	// Rx - Always listening
@@ -1078,6 +873,8 @@ int main()
 	Serial.begin(38400);
 	Serial.println("- Acionna Water Bomb -");
 
+	refreshStoredData();
+
 	while (1)
 	{
 		// Refrash all variables to compare and take decisions;
@@ -1086,7 +883,7 @@ int main()
 
 		// Compare time of day and machine status;
 		wdt_reset();
-		motorDecision();
+		process_Mode();
 
 		// Bluetooth communication
 		wdt_reset();
