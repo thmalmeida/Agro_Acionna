@@ -24,6 +24,8 @@ uint8_t opcode;
 #define triacStart_on()		PORTB |=  (1<<0);	// Triac 2 is aux
 #define triacStart_off()	PORTB &= ~(1<<0);
 
+#define Th_read (~PIND & 0b10000000)
+
 enum states01 {
 	redTime,
 	greenTime
@@ -36,6 +38,7 @@ uint8_t flag_01 = 0;
 uint8_t flag_02 = 0;
 uint8_t flag_03 = 0;
 uint8_t motorStatus = 0;
+uint8_t flag_Th = 0;
 
 uint8_t HourOn  = 21;
 uint8_t MinOn   = 30;
@@ -228,6 +231,9 @@ void init_IO()
 //	DDRC = 0x00;
 //	DDRD = 0x00;
 
+
+	DDRD &= ~(1 << 7); // Thermal swith as input!
+
 	// Set triac1, triac2 and led connected pins as output
 	DDRD |= (1 << 5); // Led!
 	DDRB |= (1 << 0); // Motor
@@ -315,9 +321,11 @@ void sensorRead_Level()
 {
 	uint8_t low, high;
 	uint16_t value;
-	const uint16_t reference = 300;
+	const uint16_t reference = 500;
 
-	ADMUX &= ~(1<<MUX3);							// Select ADC0
+
+	// Select ADC0 - LL sensor
+	ADMUX &= ~(1<<MUX3);
 	ADMUX &= ~(1<<MUX2);
 	ADMUX &= ~(1<<MUX1);
 	ADMUX &= ~(1<<MUX0);
@@ -336,7 +344,8 @@ void sensorRead_Level()
 		levelSensorLL = 0;
 
 
-	ADMUX &= ~(1<<MUX3);							// Select ADC1
+	// Select ADC1 - MLL sensor
+	ADMUX &= ~(1<<MUX3);
 	ADMUX &= ~(1<<MUX2);
 	ADMUX &= ~(1<<MUX1);
 	ADMUX |=  (1<<MUX0);
@@ -355,7 +364,8 @@ void sensorRead_Level()
 		levelSensorMLL = 0;
 
 
-	ADMUX &= ~(1<<MUX3);							// Select ADC2
+	// Select ADC2 - HL sensor
+	ADMUX &= ~(1<<MUX3);
 	ADMUX &= ~(1<<MUX2);
 	ADMUX |=  (1<<MUX1);
 	ADMUX &= ~(1<<MUX0);
@@ -416,9 +426,9 @@ void periodVerify1()
 		}
 	}
 }
-void motorControl_bySensors()
+void motorControl_bySensors(uint16_t highSensor)
 {
-	if(levelSensorMLL)
+	if(highSensor)
 	{
 		if(!motorStatus)
 		{
@@ -446,7 +456,7 @@ void motorPeriodDecision()
 		break;
 
 	case greenTime:
-		motorControl_bySensors();
+		motorControl_bySensors(levelSensorMLL);
 		break;
 	}
 }
@@ -469,7 +479,11 @@ void process_Mode()
 			break;
 
 		case 2:	// all Day Working;
-			motorControl_bySensors();
+			motorControl_bySensors(levelSensorMLL);
+			break;
+
+		case 3:	// all Day Working;
+			motorControl_bySensors(levelSensorHL);
 			break;
 
 		default:
@@ -478,7 +492,6 @@ void process_Mode()
 			break;
 	}
 }
-
 
 void summary_Print(uint8_t opt)
 {
@@ -506,6 +519,10 @@ void summary_Print(uint8_t opt)
 
 				case 2:
 					strcpy(buffer," Modo: Ligado direto!");
+					break;
+
+				case 3:
+					strcpy(buffer," Modo: Ligado direto HARD!");
 					break;
 
 				default:
@@ -543,7 +560,7 @@ void summary_Print(uint8_t opt)
 			break;
 
 		case 3:
-			sprintf(buffer,"Motor: %d, Time: %.2d:%.2d:%.2d ",motorStatus, tm.Hour, tm.Minute, tm.Second);
+			sprintf(buffer,"Motor: %d, Flag_Th.: %d, Rth.: %d, Time: %.2d:%.2d:%.2d,", motorStatus, flag_Th, Th_read, tm.Hour, tm.Minute, tm.Second);
 			Serial.println(buffer);
 
 			break;
@@ -570,8 +587,43 @@ void summary_Print(uint8_t opt)
 	}
 }
 
+void thermalSafe()
+{
+	if(motorStatus)
+	{
+		if(Th_read)
+		{
+			summary_Print(3);
+			uint16_t countThermal = 50000;
+			Serial.println("Thermal Start");
+			while(Th_read && countThermal)
+			{
+				countThermal--;
+			}
+			Serial.println("Thermal Stop");
+			if(!countThermal)
+			{
+				flag_Th = 1;
+
+				motor_stop();
+				stateMode = 0;
+				eeprom_write_byte(( uint8_t *)(addr_stateMode), stateMode);
+			}
+			else
+				flag_Th = 0;
+
+		}
+		else
+		{
+			flag_Th = 0;
+		}
+	}
+}
+
 void refreshVariables()
 {
+	thermalSafe();
+
 	if (flag_1s)
 	{
 		flag_1s = 0;
@@ -599,24 +651,32 @@ void refreshStoredData()
 
 void handleMessage()
 {
-/*	$0x;				Verificar detalhes - Detalhes simples (tempo).
-		$00;				- Detalhes simples (tempo).
+/*
+$0X;			Verificar detalhes - Detalhes simples (tempo).
+	$00;		- Detalhes simples (tempo).
+	$01;		- Verifica histórico de quando ligou e desligou;
+
+	$03;		- Verifica detalhes do motor;
+	$04;		- Verifica detalhes do nível de água no poço;
+
+	$09;		- Reinicia o sistema.
+
+$1HHMMSS;		Ajusta o horário do sistema;
+	$1123040;	Ajusta a hora para 12:30:40
+
+$2DDMMAAAA;	Ajusta a data do sistema no formato dia/mês/ano(4 dígitos);
+	$201042014;	Ajusta a data para 01 de abril de 2014;
 
 
-		$09;				- Reseta o sistema.
+$3X;			Acionamento do motor;
+	$31;		liga;
+	$30;		desliga;
 
-	$1123030;		Ajustar a hora para 12:30:30
-
-	$201042014;		ajustar a data para 01 de abril de 2014
-
-	$3x;			Comando forçado de ligar/desligar.
-		$30;		Desliga;
-		$31;		Liga;
-
-	$6x;
-		$60; 		Sistema Desligado;
-		$61;		Liga somente à noite;
-		$62;		Sempre ligado.
+$6X;			Modos de funcionamento;
+	$60; 		Sistema Desligado (nunca ligará);
+	$61;		Liga somente à noite;
+	$62;		Sempre ligado.
+	$63;		Sempre ligado sensor mais baixo.
 */
 
 	// Tx - Transmitter
@@ -761,7 +821,6 @@ void handleMessage()
 				aux[1] = sInstr[1];
 				aux[2] = '\0';
 				stateMode = (uint8_t) atoi(aux);
-
 				eeprom_write_byte(( uint8_t *)(addr_stateMode), stateMode);
 
 				summary_Print(0);
@@ -877,7 +936,7 @@ int main()
 
 	while (1)
 	{
-		// Refrash all variables to compare and take decisions;
+		// Refresh all variables to compare and take decisions;
 		wdt_reset();
 		refreshVariables();
 
