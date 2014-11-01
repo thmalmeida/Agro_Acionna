@@ -46,16 +46,19 @@ uint8_t MinOn   = 30;
 uint8_t HourOff = 6;
 uint8_t MinOff  = 0;
 
+uint16_t reservoirLevelRef = 1000;
+
 volatile uint8_t flag_1s = 1;
 
 
 //const uint8_t pkt_size = 10;
 //uint8_t pkt_Tx[pkt_size], pkt_Rx[pkt_size];
 uint8_t k, rLength, j;
-char aux[3], buffer[40], inChar, sInstr[20];
+char aux[3], aux2[5], buffer[40], inChar, sInstr[20];
 char sInstrBluetooth[30];
 
 const uint8_t addr_stateMode = 1;
+const uint8_t addr_LevelRef = 3;
 
 uint8_t stateMode = 1;
 uint8_t enableSend = 0;
@@ -321,8 +324,9 @@ void sensorRead_Level()
 {
 	uint8_t low, high;
 	uint16_t value;
-	const uint16_t reference = 500;
+	uint16_t reference;
 
+	reference = reservoirLevelRef;
 
 	// Select ADC0 - LL sensor
 	ADMUX &= ~(1<<MUX3);
@@ -647,36 +651,49 @@ void refreshVariables()
 void refreshStoredData()
 {
 	stateMode = eeprom_read_byte((uint8_t *)(addr_stateMode));
+
+	uint8_t lbyte, hbyte;
+	hbyte = eeprom_read_byte((uint8_t *)(addr_LevelRef+1));
+	lbyte = eeprom_read_byte((uint8_t *)(addr_LevelRef));
+
+	reservoirLevelRef = ((hbyte << 8) | lbyte);
+
 }
 
 void handleMessage()
 {
 /*
-$0X;			Verificar detalhes - Detalhes simples (tempo).
-	$00;		- Detalhes simples (tempo).
-	$01;		- Verifica histórico de quando ligou e desligou;
+$0X;				Verificar detalhes - Detalhes simples (tempo).
+	$00;			- Detalhes simples (tempo).
+	$01;			- Verifica histórico de quando ligou e desligou;
+	$02;			- nda;
+	$03;			- Verifica detalhes do motor;
+	$04;			- Verifica detalhes do nível de água no poço;
+	$05;			- nda;
+	$06;			- nda;
+	$07:dddd;		- Referência para os níveis de água;
+		$07;		- Retorna a referência do nível atual;
+		$07:dddd;	- Adiciona nova referência para os sensores de nível;
+	$08:x;			- Send level output continuously;
+		$08:1;		- inicia;
+		$08:0;		- para.
+	$09;			- Reinicia o sistema.
 
-	$03;		- Verifica detalhes do motor;
-	$04;		- Verifica detalhes do nível de água no poço;
+$1HHMMSS;			- Ajusta o horário do sistema;
+	$1123040;		- Ajusta a hora para 12:30:40
 
-	$09;		- Reinicia o sistema.
+$2DDMMAAAA;			- Ajusta a data do sistema no formato dia/mês/ano(4 dígitos);
+	$201042014;		- Ajusta a data para 01 de abril de 2014;
 
-$1HHMMSS;		Ajusta o horário do sistema;
-	$1123040;	Ajusta a hora para 12:30:40
+$3X;				- Acionamento do motor;
+	$31;			- liga o motor;
+	$30;			- desliga o motor;
 
-$2DDMMAAAA;	Ajusta a data do sistema no formato dia/mês/ano(4 dígitos);
-	$201042014;	Ajusta a data para 01 de abril de 2014;
-
-
-$3X;			Acionamento do motor;
-	$31;		liga;
-	$30;		desliga;
-
-$6X;			Modos de funcionamento;
-	$60; 		Sistema Desligado (nunca ligará);
-	$61;		Liga somente à noite;
-	$62;		Sempre ligado.
-	$63;		Sempre ligado sensor mais baixo.
+$6X;				- Modos de funcionamento;
+	$60; 			- Sistema Desligado (nunca ligará);
+	$61;			- Liga somente à noite;
+	$62;			- Sempre ligado.
+	$63;			- Sempre ligado sensor mais baixo.
 */
 
 	// Tx - Transmitter
@@ -712,35 +729,76 @@ $6X;			Modos de funcionamento;
 				uint8_t statusCommand = 0;
 				statusCommand = (uint8_t) atoi(aux);
 
-				if(sInstr[2] == ';')
+				switch (statusCommand)
 				{
-					switch (statusCommand)
-					{
-						case 2:
-							sprintf(buffer,"$1%.2d%.2d%.2d",tm.Hour, tm.Minute, tm.Second);
-							Serial.println(buffer);
+					case 2:
+						sprintf(buffer,"$1%.2d%.2d%.2d",tm.Hour, tm.Minute, tm.Second);
+						Serial.println(buffer);
 //							Serial1.println(buffer);
-							break;
+						break;
 
-						case 7:
-							flag_sendContinuously = 1;
-							break;
+					case 7:
+						if(sInstr[2]==':'&& sInstr[7]==';')
+						{
+							aux2[0] = sInstr[3];
+							aux2[1] = sInstr[4];
+							aux2[2] = sInstr[5];
+							aux2[3] = sInstr[6];
+							aux2[4] = '\0';
 
-						case 8:
-							flag_sendContinuously = 0;
-							break;
+							Serial.println(sInstr[3]);
+							Serial.println(sInstr[4]);
+							Serial.println(sInstr[5]);
+							Serial.println(sInstr[6]);
 
-						case 9:
-							flag_reset = 1;
-							break;
+							uint16_t wordReference = 0;
+							wordReference = (uint16_t) atoi(aux2);
 
-						default:
-							summary_Print(statusCommand);
-							break;
-					}
+							reservoirLevelRef = wordReference;
+
+							uint8_t lbyteRef = 0, hbyteRef = 0;
+							lbyteRef = wordReference;
+							hbyteRef = (wordReference >> 8);
+
+							eeprom_write_byte((uint8_t *)(addr_LevelRef+1), hbyteRef);
+							eeprom_write_byte((uint8_t *)(addr_LevelRef), lbyteRef);
+
+							Serial.print("Changed! Ref: ");
+							Serial.println(reservoirLevelRef);
+						}
+						if(sInstr[2]==';')
+						{
+							Serial.print("Ref: ");
+							Serial.println(reservoirLevelRef);
+						}
+					break;
+
+					case 8:
+						if(sInstr[2]==':' && sInstr[4]==';')
+						{
+							aux[0] = '0';
+							aux[1] = sInstr[3];
+							aux[2] = '\0';
+							uint8_t sendCCommand;
+							sendCCommand = (uint8_t) atoi(aux);
+
+							if(sendCCommand)
+								flag_sendContinuously = 1;
+							else
+								flag_sendContinuously = 0;
+						}
+						break;
+
+					case 9:
+						flag_reset = 1;
+						break;
+
+					default:
+						summary_Print(statusCommand);
+						break;
 				}
 			}
-				break;
+			break;
 
 // -----------------------------------------------------------------
 			case 1:		// Set-up clock
