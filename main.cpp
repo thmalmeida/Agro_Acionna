@@ -9,20 +9,25 @@
 #include "RTC/Time.h"
 #include "RTC/DS1307RTC.h"
 
-const char *monthName[12] = {
-	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-};
+//const char *monthName[12] = {
+//	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+//	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+//};
 
 tmElements_t tm;
 uint8_t opcode;
 
-#define triac_B_on()		PORTD |=  (1<<6);	// Triac 1 is the starter
-#define triac_B_off()		PORTD &= ~(1<<6);
+//#define triac_B_on()		PORTD |=  (1<<6);	// Triac 1 is the starter
+//#define triac_B_off()		PORTD &= ~(1<<6);
 #define triac_A_on()		PORTB |=  (1<<0);	// Triac 2 is aux
 #define triac_A_off()		PORTB &= ~(1<<0);
 
-#define Th_read (~PIND & 0b10000000)
+#define driveMotor_ON()		triac_A_on();
+#define driveMotor_OFF()	triac_A_off();
+
+#define readPin_Rth			(~PIND & 0b10000000)
+#define readPin_k1			bit_is_set(PINB, 0)
+//#define read_buttonSignal	bit_is_clear(PIND, 3)
 
 enum states01 {
 	redTime,
@@ -93,7 +98,7 @@ uint8_t enableDecode = 0;
 uint8_t enableTranslate = 0;
 uint8_t flagSync = 0;
 uint8_t countSync = 0;
-uint8_t flag_sendContinuously = 0;
+uint8_t flag_debug = 0;
 
 uint8_t j2 = 0;
 uint8_t flag_frameStartBT = 0;
@@ -204,8 +209,6 @@ void init_WDT()
 //	WDTCSR = 0x00;
 //	sei();
 
-
-
 	// Configuring to enable only Reset System if occurs 4 s timeout
 //	WDTCSR <== WDIF WDIE WDP3 WDCE WDE WDP2 WDP1 WDP0
 //	WDTCSR |=  (1<<WDCE) | (1<<WDE);	// Enable Watchdog Timer
@@ -222,7 +225,7 @@ void init_WDT()
 //	wdt_enable(WDTO_8S);
 	// WDT enable
 
-	wdt_enable(WDTO_8S);
+	wdt_enable(WDTO_4S);
 }
 void init_ADC()
 {
@@ -318,12 +321,11 @@ void motor_start()
 
 	//	flag_LL = 0;
 	//	flag_ML = 1;
-		motorStatus = 1;
-
 		motor_timerON = 0;
 
-		triac_A_on();
-		triac_B_on();
+		driveMotor_ON();
+
+		motorStatus = readPin_k1;
 	}
 }
 void motor_stop()
@@ -349,14 +351,14 @@ void motor_stop()
 //	flag_LL = 1;
 //	flag_ML = 0;
 
-	motorStatus = 0;
 	motor_timerOFF = 0;
 
 	flag_waitPowerOn = 0;
 	powerOn_min = powerOn_min_Standy;
 
-	triac_A_off();
-	triac_B_off();
+	driveMotor_OFF();
+
+	motorStatus = readPin_k1;
 }
 double get_Pressure()
 {
@@ -499,15 +501,15 @@ void check_thermalSafe()
 {
 	if(motorStatus)
 	{
-		if(Th_read)
+		if(readPin_Rth)
 		{
 			uint16_t countThermal = 50000;
-			Serial.println("Thermal Start");
-			while(Th_read && countThermal)
+			Serial.println("Th0");
+			while(readPin_Rth && countThermal)
 			{
 				countThermal--;
 			}
-			Serial.println("Thermal Stop");
+			Serial.println("Th1");
 			if(!countThermal)
 			{
 				flag_Th = 1;
@@ -538,6 +540,11 @@ void check_elapsedTime()
 			}
 		}
 	}
+}
+void check_gpio()
+{
+//	motorStatus =
+	motorStatus = readPin_k1;
 }
 void motorControl_byVariables()
 {
@@ -588,7 +595,6 @@ void process_Mode()
 
 					flag_waitPowerOn = 0;
 					powerOn_min = powerOn_min_Standy;
-	//				stateMode = stateLast;
 				}
 			}
 			break;
@@ -603,7 +609,7 @@ void process_Mode()
 
 		default:
 			stateMode = 0;
-			Serial.println("Changed to Standby mode!");
+			Serial.println("Standby");
 			break;
 	}
 }
@@ -612,23 +618,23 @@ void summary_Print(uint8_t opt)
 	switch (opt)
 	{
 		case 0:
-			sprintf(buffer,"Time: %.2d:%.2d:%.2d, %.2d/%.2d/%d",tm.Hour, tm.Minute, tm.Second, tm.Day, tm.Month, tmYearToCalendar(tm.Year));
+			sprintf(buffer,"Time:%.2d:%.2d:%.2d %.2d/%.2d/%d",tm.Hour, tm.Minute, tm.Second, tm.Day, tm.Month, tmYearToCalendar(tm.Year));
 			Serial.print(buffer);
 
-			sprintf(buffer," Uptime: %.2d:%.2d:%.2d, %d day(s), %d month(s), %d year(s)", hour(), minute(), second(), day()-1, month()-1, year()-1970);
+			sprintf(buffer," UP:%.2d:%.2d:%.2d, d:%d m:%d", hour(), minute(), second(), day()-1, month()-1);
 			Serial.println(buffer);
 
-			sprintf(buffer," Per.: %d, Motor: %d",periodo, motorStatus);
+			sprintf(buffer," P:%d k1:%d",periodo, motorStatus);
 			Serial.println(buffer);
 
 			switch (stateMode)
 			{
 				case 0:
-					strcpy(buffer," Modo: Desligado!");
+					strcpy(buffer," Modo:Desligado");
 					break;
 
 				case 1:
-					sprintf(buffer," Modo: Liga a noite");
+					sprintf(buffer," Modo:Liga Noite");
 					break;
 
 				case 2:
@@ -638,12 +644,12 @@ void summary_Print(uint8_t opt)
 					}
 					else
 					{
-						sprintf(buffer," Modo: Liga %dx por dia",nTM);
+						sprintf(buffer," Modo: Liga %dx/dia",nTM);
 					}
 					break;
 
 				default:
-					strcpy(buffer," stateMode Error!");
+					strcpy(buffer,"sMode Err");
 					break;
 			}
 			Serial.println(buffer);
@@ -677,20 +683,20 @@ void summary_Print(uint8_t opt)
 			break;
 
 		case 2:
-			sprintf(buffer,"c: %d min, flag: %d, Time: %.2d:%.2d,:, s: %d min", powerOn_min_Standy, flag_waitPowerOn, powerOn_min, powerOn_sec, motorTimerE);
+			sprintf(buffer,"c:%d min, f:%d, Time: %.2d:%.2d,:, s:%d min", powerOn_min_Standy, flag_waitPowerOn, powerOn_min, powerOn_sec, motorTimerE);
 			Serial.println(buffer);
 			break;
 
 		case 3:
-			sprintf(buffer,"Motor:%d, Fth:%d, Rth:%d, PRess:%d, PRessRef:%d ", motorStatus, flag_Th, Th_read, PRess, PRessureRef);
+			sprintf(buffer,"Motor:%d Fth:%d Rth:%d Pr:%d Pref:%d ", motorStatus, flag_Th, readPin_Rth, PRess, PRessureRef);
 			Serial.println(buffer);
 			break;
 
 		case 4:
-			sprintf(buffer,"LL:%d, ML:%d, HL:%d ",levelSensorLL, levelSensorML, levelSensorHL);
+			sprintf(buffer,"LL:%d ML:%d HL:%d ",levelSensorLL, levelSensorML, levelSensorHL);
 			Serial.println(buffer);
 
-			sprintf(buffer,"LL:%d, ML:%d, HL:%d",levelSensorLL_d, levelSensorML_d, levelSensorHL_d);
+			sprintf(buffer,"LL:%d ML:%d HL:%d",levelSensorLL_d, levelSensorML_d, levelSensorHL_d);
 			Serial.println(buffer);
 			break;
 
@@ -703,20 +709,20 @@ void summary_Print(uint8_t opt)
 			break;
 
 		case 6:
-			sprintf(buffer,"time ON : %d ",motor_timerON/60);
+			sprintf(buffer,"timeON:%d ",motor_timerON/60);
 			Serial.println(buffer);
-			sprintf(buffer,"time OFF: %d ",motor_timerOFF/60);
+			sprintf(buffer,"timeOFF:%d ",motor_timerOFF/60);
 			Serial.println(buffer);
 			break;
 
 		case 7:
-			sprintf(buffer,"%d P:%d Fth:%d Rth:%d  ", read_ADC(7), PRess, flag_Th, Th_read);
+			sprintf(buffer,"%d P:%d Fth:%d Rth:%d  ", read_ADC(7), PRess, flag_Th, readPin_Rth);
 			Serial.println(buffer);
 
-			sprintf(buffer,"LL:%d, ML:%d, HL:%d  ",levelSensorLL, levelSensorML, levelSensorHL);
+			sprintf(buffer,"LL:%d ML:%d HL:%d  ",levelSensorLL, levelSensorML, levelSensorHL);
 			Serial.println(buffer);
 
-			sprintf(buffer,"LL:%d, ML:%d, HL:%d  ",levelSensorLL_d, levelSensorML_d, levelSensorHL_d);
+			sprintf(buffer,"LL:%d ML:%d HL:%d  ",levelSensorLL_d, levelSensorML_d, levelSensorHL_d);
 			Serial.println(buffer);
 			break;
 			
@@ -726,12 +732,12 @@ void summary_Print(uint8_t opt)
 			break;
 
 		case 9:
-			sprintf(buffer,"Error!");
+			sprintf(buffer,"Err");
 			Serial.println(buffer);
 			break;
 
 		default:
-			sprintf(buffer,"Comando nao implementado!");
+			sprintf(buffer,"not implemented");
 			Serial.println(buffer);
 			break;
 	}
@@ -743,14 +749,17 @@ void refreshVariables()
 		flag_1s = 0;
 
 		PRess = get_Pressure();			// Get pressure in 1 second interval
+
+		check_gpio();
+		check_thermalSafe();
+		check_levelSensors();
+		check_elapsedTime();
+
 		RTC.read(tm);
 		check_period();					// Period verify
 		check_timeMatch();
-		check_levelSensors();
-		check_thermalSafe();
-		check_elapsedTime();
 
-		if(flag_sendContinuously)
+		if(flag_debug)
 		{
 			summary_Print(7);
 		}
@@ -898,26 +907,21 @@ $6X;				- Modos de funcionamento;
 							Serial.print("motorTimerE: ");
 							Serial.println(motorTimerE);
 						}
-
 						summary_Print(statusCommand);
 					}
 					break;
 					// ------------------------------
 					case 3:
-						if(sInstr[2]==':')
+						if(sInstr[2]==':' && sInstr[3] == 's' && sInstr[4] == ':' && sInstr[7] == ';')
 						{
-							if(sInstr[3] == 's' && sInstr[4] == ':' && sInstr[7] == ';')
-							{
-								aux[0] = sInstr[5];
-								aux[1] = sInstr[6];
-								aux[2] = '\0';
-								PRessureRef = (uint8_t) atoi(aux);
+							aux[0] = sInstr[5];
+							aux[1] = sInstr[6];
+							aux[2] = '\0';
+							PRessureRef = (uint8_t) atoi(aux);
+							eeprom_write_byte((uint8_t *)(addr_PRessureRef), PRessureRef);
 
-								eeprom_write_byte((uint8_t *)(addr_PRessureRef), PRessureRef);
-
-								Serial.print("PRessureRef: ");
-								Serial.println(PRessureRef);
-							}
+							Serial.print("PRessureRef: ");
+							Serial.println(PRessureRef);
 						}
 						else
 							summary_Print(statusCommand);
@@ -929,13 +933,9 @@ $6X;				- Modos de funcionamento;
 							aux[0] = '0';
 							aux[1] = sInstr[3];
 							aux[2] = '\0';
-							uint8_t sendCCommand;
-							sendCCommand = (uint8_t) atoi(aux);
-
-							if(sendCCommand)
-								flag_sendContinuously = 1;
-							else
-								flag_sendContinuously = 0;
+							uint8_t debugCommand;
+							debugCommand = (uint8_t) atoi(aux);
+							flag_debug = debugCommand;
 						}//$04:s:0900;
 						else if(sInstr[2]==':' && sInstr[3]=='s' && sInstr[4]==':' && sInstr[9]==';')
 						{
@@ -972,7 +972,7 @@ $6X;				- Modos de funcionamento;
 							Serial.println(levelRef_10bit);
 						}
 						break;
-
+					// ------------------------------
 					case 7:
 						if(sInstr[2]==':' && sInstr[4]==';')
 						{
@@ -1002,15 +1002,13 @@ $6X;				- Modos de funcionamento;
 									break;
 							}
 						}
-
 						break;
-
+					// ------------------------------
 					case 9:
 						Serial.println("Rebooting system...");
 						wdt_enable(WDTO_15MS);
 						_delay_ms(100);
 //						flag_reset = 1;
-
 						break;
 
 					default:
@@ -1042,10 +1040,10 @@ $6X;				- Modos de funcionamento;
 
 				summary_Print(0);
 			}
-				break;
+			break;
 // -----------------------------------------------------------------
 			case 2:		// Set-up date
-
+			{
 				// Getting the parameters
 				aux[0] = sInstr[1];
 				aux[1] = sInstr[2];
@@ -1068,24 +1066,25 @@ $6X;				- Modos de funcionamento;
 				RTC.write(tm);
 
 				summary_Print(0);
-
-				break;
+			}
+			break;
 // -----------------------------------------------------------------
 			case 3:		// Set motor ON/OFF
+			{
 				uint8_t motorCommand;
 				aux[0] = '0';
 				aux[1] = sInstr[1];
 				aux[2] = '\0';
 				motorCommand = (uint8_t) atoi(aux);
 
-				if (motorCommand&&(!motorStatus))
+				if (motorCommand && (!motorStatus))
 					motor_start();
 				else
 					motor_stop();
 
 				summary_Print(3);
-
-				break;
+			}
+			break;
 // -----------------------------------------------------------------
 
 // -----------------------------------------------------------------
@@ -1131,6 +1130,7 @@ $6X;				- Modos de funcionamento;
 			break;
 // ----------------------------------------------------------------
 			case 6:		// Set working mode
+			{
 				aux[0] = '0';
 				aux[1] = sInstr[1];
 				aux[2] = '\0';
@@ -1138,13 +1138,14 @@ $6X;				- Modos de funcionamento;
 				eeprom_write_byte(( uint8_t *)(addr_stateMode), stateMode);
 
 				summary_Print(0);
-				break;
+			}
+			break;
 // -----------------------------------------------------------------
 			default:
 				summary_Print(10);
 				break;
 		}
-		memset(sInstr,0,sizeof(sInstr));
+		memset(sInstr,0,sizeof(sInstr));	// Clear all vector;
 	}
 }
 void comm_Bluetooth()
@@ -1259,16 +1260,11 @@ ISR(TIMER1_COMPA_vect)
 int main()
 {
 	// PowerOFF / Reset verification
-//	flag_WDRF 	= (WDRF & MCUSR);
-//	flag_BORF 	= (BORF & MCUSR);
-//	flag_EXTRF 	= (EXTRF & MCUSR);
-//	flag_PORF 	= (PORF & MCUSR);
-
 	cli();
-	flag_WDRF =		(0b00001000 & MCUSR);
-	flag_BORF =		(0b00000100 & MCUSR);
-	flag_EXTRF =	(0b00000010 & MCUSR);
-	flag_PORF =		(0b00000001 & MCUSR);
+	flag_WDRF 	= (WDRF & MCUSR);
+	flag_BORF 	= (BORF & MCUSR);
+	flag_EXTRF 	= (EXTRF & MCUSR);
+	flag_PORF 	= (PORF & MCUSR);
 	MCUSR = 0x00;
 	sei();
 
@@ -1278,17 +1274,18 @@ int main()
 	init_Timer1_1Hz();
 	init_ADC();
 	init_WDT();
-	
+
 	Serial.begin(38400);
-	Serial.println("- Acionna Water Bomb -");
+	Serial.println("-Acionna WP-");
 
 	refreshStoredData();
-	
-	if(flag_WDRF || flag_BORF || flag_EXTRF || flag_PORF)
-	{
-		printf(buffer,"WDRF: %d, BORF: %d, EXTRF: %d, PORF: %d", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
-		Serial.println(buffer);
-	}
+
+//	if(flag_WDRF || flag_BORF || flag_EXTRF || flag_PORF)
+//	{
+//		printf(buffer,"WDRF: %d, BORF: %d, EXTRF: %d, PORF: %d", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
+//		printf(buffer,"W:%d B:%d E:%d P:%d ", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
+//		Serial.println(buffer);
+//	}
 
 	while (1)
 	{
