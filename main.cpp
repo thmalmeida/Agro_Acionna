@@ -56,6 +56,9 @@ uint8_t powerOn_min_Standy = 0;
 uint8_t powerOn_min = 0;
 uint8_t powerOn_sec = 0;
 
+uint8_t powerOff_min = 0;
+uint8_t powerOff_sec = 0;
+
 uint8_t motorTimerE = 0;
 uint8_t PRessureRef = 0;
 
@@ -528,19 +531,6 @@ void check_thermalSafe()
 		}
 	}
 }
-void check_elapsedTime()
-{
-	if(motorTimerE)
-	{
-		if(motorStatus)
-		{
-			if(motor_timerON/60 > motorTimerE)
-			{
-				motor_stop();
-			}
-		}
-	}
-}
 void check_gpio()
 {
 //	motorStatus =
@@ -558,11 +548,33 @@ void motorControl_byVariables()
 		}
 	}
 
+	if(stateMode == 1)
+	{
+		if(levelSensorHL)
+		{
+			if(!motorStatus)
+			{
+				motor_start();
+			}
+		}
+	}
+
 	if((PRess >= PRessureRef) || (!levelSensorLL))
 	{
 		if(motorStatus)
 		{
 			motor_stop();
+		}
+	}
+
+	if(motorTimerE)
+	{
+		if(motorStatus)
+		{
+			if(motor_timerON/60 >= motorTimerE)
+			{
+				motor_stop();
+			}
 		}
 	}
 }
@@ -603,7 +615,7 @@ void process_Mode()
 			motorPeriodDecision(levelSensorHL);
 			break;
 
-		case 2:	// Night Working;
+		case 2:
 			motorControl_byVariables();
 			break;
 
@@ -683,7 +695,7 @@ void summary_Print(uint8_t opt)
 			break;
 
 		case 2:
-			sprintf(buffer,"c:%d min, f:%d, Time: %.2d:%.2d,:, s:%d min", powerOn_min_Standy, flag_waitPowerOn, powerOn_min, powerOn_sec, motorTimerE);
+			sprintf(buffer,"f:%d t1:%.2d:%.2d c:%dmin t2:%d s:%dmin", flag_waitPowerOn, powerOn_min, powerOn_sec, powerOn_min_Standy, motor_timerON/60, motorTimerE);
 			Serial.println(buffer);
 			break;
 
@@ -716,7 +728,7 @@ void summary_Print(uint8_t opt)
 			break;
 
 		case 7:
-			sprintf(buffer,"%d P:%d Fth:%d Rth:%d  ", read_ADC(7), PRess, flag_Th, readPin_Rth);
+			sprintf(buffer,"P:%d Fth:%d Rth:%d  ", PRess, flag_Th, readPin_Rth);
 			Serial.println(buffer);
 
 			sprintf(buffer,"LL:%d ML:%d HL:%d  ",levelSensorLL, levelSensorML, levelSensorHL);
@@ -727,7 +739,7 @@ void summary_Print(uint8_t opt)
 			break;
 			
 		case 8:
-			sprintf(buffer,"WDRF: %d, BORF: %d, EXTRF: %d, PORF: %d", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
+			sprintf(buffer,"WDRF:%d BORF:%d EXTRF:%d PORF:%d", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
 			Serial.println(buffer);
 			break;
 
@@ -742,18 +754,50 @@ void summary_Print(uint8_t opt)
 			break;
 	}
 }
+void refreshTimerVar()
+{
+	if(motorStatus)
+	{
+		motor_timerON++;
+	}
+	else
+	{
+		motor_timerOFF++;
+	}
+
+	if(!flag_waitPowerOn)
+	{
+		if(powerOn_sec == 0)
+		{
+			if(powerOn_min == 0)
+			{
+				flag_waitPowerOn = 1;
+			}
+			else
+			{
+				powerOn_sec = 59;
+				powerOn_min--;
+			}
+		}
+		else
+		{
+			powerOn_sec--;
+		}
+	}
+}
 void refreshVariables()
 {
 	if (flag_1s)
 	{
 		flag_1s = 0;
 
+		refreshTimerVar();
+
 		PRess = get_Pressure();			// Get pressure in 1 second interval
 
 		check_gpio();
 		check_thermalSafe();
 		check_levelSensors();
-		check_elapsedTime();
 
 		RTC.read(tm);
 		check_period();					// Period verify
@@ -798,15 +842,15 @@ $0X;				Verificar detalhes - Detalhes simples (tempo).
 	$02;			- Mostra tempo que falta para ligar;
 		$02:c;		- Zera o tempo;
 		$02:c:30;	- Ajusta novo tempo para 30 min;
-		$02:s:30;	- Tempo máximo ligado para 30 min. Para não utilizar, colocar zero;
+		$02:s:90;	- Tempo máximo ligado para 90 min. Para não utilizar, colocar zero;
 	$03;			- Verifica detalhes do motor, pressão e sensor termico;
 	$04;			- Verifica detalhes do nível de água no poço e referência 10 bits;
-		$04:0;		- Stop to send continuously;
-		$04:1;		- Start to Send level output continuously;
+		$04:0;		- Interrompe o envio continuo das variáveis de pressão e nível;
+		$04:1;		- Envia continuamente valores de pressão e nível;
 	$04:dddd;		- Referência para os níveis de água;
-		$04:dddd;	- Adiciona nova referência para os sensores de nível;
+		$04:0900d;	- Adiciona nova referência para os sensores de nível. Valor de 0 a 1023;
 	$05;			- Mostra os horários que liga no modo $62;
-	$06;			- Tem restante para desligar o motor;
+	$06;			- Tempo ligado e tempo desligado;
 	$07:x;			- ADC reference change.
 		$07:0;		- AREF
 		$07:1;		- AVCC with external cap at AREF pin
@@ -824,10 +868,11 @@ $3X;				- Acionamento do motor;
 	$31;			- liga o motor;
 	$30;			- desliga o motor;
 
-$5;
-	$:n:N;
-$5:h1:2130;
-$5:n:4;
+$5:n:X; ou $5:hX:HHMM;
+	$5:n:9;			- Configura para acionar 9 vezes. Necessário configurar 9 horários;
+	$5:n:9;			- Configura o sistema para acionar uma única vez às 21:30 horas;
+	$5:h1:2130;		- Configura o primeiro horário como 21:30 horas;
+	$5:h8:0437;		- Configura o oitavo horário como 04:37 horas;
 
 $6X;				- Modos de funcionamento;
 	$60; 			- Sistema Desligado (nunca ligará);
@@ -891,8 +936,8 @@ $6X;				- Modos de funcionamento;
 
 								eeprom_write_byte((uint8_t *)(addr_standBy_min), powerOn_min_Standy);
 
-								Serial.print("Changed! powerOn min: ");
-								Serial.println(powerOn_min_Standy);
+//								Serial.print("powerOn min:");
+//								Serial.println(powerOn_min_Standy);
 							}
 						}
 						else if(sInstr[3] == 's' && sInstr[4] == ':' && sInstr[7] == ';')
@@ -904,8 +949,8 @@ $6X;				- Modos de funcionamento;
 
 							eeprom_write_byte((uint8_t *)(addr_motorTimerE), motorTimerE);
 
-							Serial.print("motorTimerE: ");
-							Serial.println(motorTimerE);
+//							Serial.print("timeE:");
+//							Serial.println(motorTimerE);
 						}
 						summary_Print(statusCommand);
 					}
@@ -920,7 +965,7 @@ $6X;				- Modos de funcionamento;
 							PRessureRef = (uint8_t) atoi(aux);
 							eeprom_write_byte((uint8_t *)(addr_PRessureRef), PRessureRef);
 
-							Serial.print("PRessureRef: ");
+							Serial.print("PRessRef:");
 							Serial.println(PRessureRef);
 						}
 						else
@@ -939,16 +984,11 @@ $6X;				- Modos de funcionamento;
 						}//$04:s:0900;
 						else if(sInstr[2]==':' && sInstr[3]=='s' && sInstr[4]==':' && sInstr[9]==';')
 						{
-							aux2[0] = sInstr[3];
-							aux2[1] = sInstr[4];
-							aux2[2] = sInstr[5];
-							aux2[3] = sInstr[6];
+							aux2[0] = sInstr[5];
+							aux2[1] = sInstr[6];
+							aux2[2] = sInstr[7];
+							aux2[3] = sInstr[8];
 							aux2[4] = '\0';
-
-							Serial.println(sInstr[3]);
-							Serial.println(sInstr[4]);
-							Serial.println(sInstr[5]);
-							Serial.println(sInstr[6]);
 
 							uint16_t wordReference = 0;
 							wordReference = (uint16_t) atoi(aux2);
@@ -961,16 +1001,10 @@ $6X;				- Modos de funcionamento;
 
 							eeprom_write_byte((uint8_t *)(addr_LevelRef+1), hbyteRef);
 							eeprom_write_byte((uint8_t *)(addr_LevelRef), lbyteRef);
-
-							Serial.print("Changed! Ref: ");
-							Serial.println(levelRef_10bit);
 						}
-						else
-						{
-							summary_Print(statusCommand);
-							Serial.print("Ref: ");
-							Serial.println(levelRef_10bit);
-						}
+						summary_Print(statusCommand);
+						Serial.print("Ref: ");
+						Serial.println(levelRef_10bit);
 						break;
 					// ------------------------------
 					case 7:
@@ -1005,7 +1039,7 @@ $6X;				- Modos de funcionamento;
 						break;
 					// ------------------------------
 					case 9:
-						Serial.println("Rebooting system...");
+						Serial.println("Rebooting...");
 						wdt_enable(WDTO_15MS);
 						_delay_ms(100);
 //						flag_reset = 1;
@@ -1175,7 +1209,7 @@ void comm_Bluetooth()
 		{
 			memset(sInstrBluetooth,0,sizeof(sInstrBluetooth));
 			j2=0;
-			Serial.println("ZEROU! sIntr BLuetooth Buffer!");
+//			Serial.println("ZEROU! sIntr BLuetooth Buffer!");
 		}
 
 		if(inChar==';')
@@ -1220,7 +1254,7 @@ void comm_Bluetooth()
 		}
 		else
 		{
-			Serial.println("Error!!");
+//			Serial.println("Err");
 			Serial.write(pi0[0]);
 			Serial.write(pf0[0]);
 		}
@@ -1230,31 +1264,6 @@ void comm_Bluetooth()
 ISR(TIMER1_COMPA_vect)
 {
 	flag_1s = 1;
-
-	if(motorStatus)
-		motor_timerON++;
-	else
-		motor_timerOFF++;
-
-	if(!flag_waitPowerOn)
-	{
-		if(powerOn_sec == 0)
-		{
-			if(powerOn_min == 0)
-			{
-				flag_waitPowerOn = 1;
-			}
-			else
-			{
-				powerOn_sec = 59;
-				powerOn_min--;
-			}
-		}
-		else
-		{
-			powerOn_sec--;
-		}
-	}
 }
 
 int main()
