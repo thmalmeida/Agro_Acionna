@@ -11,6 +11,7 @@
 #include "RTC/Time.h"
 #include "RTC/DS1307RTC.h"
 
+
 //const char *monthName[12] = {
 //	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
 //	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
@@ -97,8 +98,13 @@ volatile uint8_t flag_1s = 1;
 
 //const uint8_t pkt_size = 10;
 //uint8_t pkt_Tx[pkt_size], pkt_Rx[pkt_size];
+// Bluetooth str parse variables
+const uint8_t sInstr_SIZE = 17;
 uint8_t k, rLength, j;
-char aux[3], aux2[5], buffer[60], inChar, sInstr[20];
+uint8_t j2 = 0;
+uint8_t flag_frameStartBT = 0;
+uint8_t enableTranslate_Bluetooth = 0;
+char aux[3], aux2[5], buffer[60], inChar, sInstr[sInstr_SIZE];
 char sInstrBluetooth[30];
 
 uint16_t levelRef_10bit = 0;
@@ -110,10 +116,6 @@ uint8_t enableTranslate = 0;
 uint8_t flagSync = 0;
 uint8_t countSync = 0;
 uint8_t flag_debug = 0;
-
-uint8_t j2 = 0;
-uint8_t flag_frameStartBT = 0;
-uint8_t enableTranslate_Bluetooth = 0;
 
 // Logs
 const int nLog = 10;
@@ -317,23 +319,22 @@ void motor_start()
 		{
 			hourLog_ON[i] = hourLog_ON[i-1];
 			minuteLog_ON[i] = minuteLog_ON[i-1];
-	//		secondLog_ON[i] = secondLog_ON[i-1];
+
 			dayLog_ON[i] = dayLog_ON[i-1];
 			monthLog_ON[i] = monthLog_ON[i-1];
-	//		YearLog_ON[i] = YearLog_ON[i-1];
 		}
 
 		hourLog_ON[0] = tm.Hour;
 		minuteLog_ON[0] = tm.Minute;
-	//	secondLog_ON[0] = tm.Second;
+
 		dayLog_ON[0] = tm.Day;
 		monthLog_ON[0] = tm.Month;
-	//	YearLog_ON[0] = tm.Year;
 
 		timeOn_min = 0;
 		timeOn_sec = 0;
 
 		driveMotor_ON();
+		_delay_ms(1);
 
 		motorStatus = readPin_k1;
 	}
@@ -345,18 +346,17 @@ void motor_stop()
 	{
 		hourLog_OFF[i] = hourLog_OFF[i-1];
 		minuteLog_OFF[i] = minuteLog_OFF[i-1];
-//		secondLog_OFF[i] = secondLog_OFF[i-1];
+
 		dayLog_OFF[i] = dayLog_OFF[i-1];
 		monthLog_OFF[i] = monthLog_OFF[i-1];
-//		YearLog_OFF[i] = YearLog_OFF[i-1];
+
 	}
 
 	hourLog_OFF[0] = tm.Hour;
 	minuteLog_OFF[0] = tm.Minute;
-//	secondLog_OFF[0] = tm.Second;
+
 	dayLog_OFF[0] = tm.Day;
 	monthLog_OFF[0] = tm.Month;
-//	YearLog_OFF[0] = tm.Year;
 
 	timeOff_min = 0;
 	timeOff_sec = 0;
@@ -365,6 +365,7 @@ void motor_stop()
 	waitPowerOn_min = waitPowerOn_min_standBy;
 
 	driveMotor_OFF();
+	_delay_ms(1);
 
 	motorStatus = readPin_k1;
 }
@@ -749,22 +750,30 @@ void summary_Print(uint8_t opt)
 			{
 				for(i=(nLog-1);i>=0;i--)
 				{
-					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_OFF[i], minuteLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i]);
+					memset(buffer,0,sizeof(buffer));
+					sprintf(buffer,"OFF_%.2d: %.2d:%.2d, %.2d/%.2d ",(i+1),hourLog_OFF[i], minuteLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i]);
 					Serial.println(buffer);
+					_delay_ms(20);
 
-					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_ON[i], minuteLog_ON[i], dayLog_ON[i], monthLog_ON[i]);
+					memset(buffer,0,sizeof(buffer));
+					sprintf(buffer,"ON__%.2d: %.2d:%.2d, %.2d/%.2d ",(i+1),hourLog_ON[i], minuteLog_ON[i], dayLog_ON[i], monthLog_ON[i]);
 					Serial.println(buffer);
+					_delay_ms(20);
 				}
 			}
 			else
 			{
 				for(i=(nLog-1);i>=0;i--) //	for(i=0;i<nLog;i++)
 				{
-					sprintf(buffer,"Ligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_ON[i], minuteLog_ON[i], dayLog_ON[i], monthLog_ON[i]);
+					memset(buffer,0,sizeof(buffer));
+					sprintf(buffer,"ON__%.2d: %.2d:%.2d, %.2d/%.2d " ,(i+1),hourLog_ON[i], minuteLog_ON[i], dayLog_ON[i], monthLog_ON[i]);
 					Serial.println(buffer);
+					_delay_ms(20);
 
-					sprintf(buffer,"Desligou_%.2d: %.2d:%.2d, %.2d/%.2d  ",(i+1),hourLog_OFF[i], minuteLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i]);
+					memset(buffer,0,sizeof(buffer));
+					sprintf(buffer,"OFF_%.2d: %.2d:%.2d, %.2d/%.2d ",(i+1),hourLog_OFF[i], minuteLog_OFF[i], dayLog_OFF[i], monthLog_OFF[i]);
 					Serial.println(buffer);
+					_delay_ms(20);
 				}
 			}
 			break;
@@ -900,11 +909,14 @@ $0X;				Verificar detalhes - Detalhes simples (tempo).
 	$08;			- Motivo do reboot.
 	$09;			- Reinicia o sistema.
 
-$1HHMMSS;			- Ajusta o horário do sistema;
-	$1123040;		- Ajusta a hora para 12:30:40
+$1:h:HHMMSS;		- Ajustes do calendário;
+	$1:h:HHMMSS;	- Ajusta o horário do sistema;
+	$1:h:123040;	- E.g. ajusta a hora para 12:30:40
+	$1:d:DDMMAAAA;	- Ajusta a data do sistema no formato dia/mês/ano(4 dígitos);
+	$1:d:04091986;	- E.g. Altera a data para 04/09/1986;
 
-$2DDMMAAAA;			- Ajusta a data do sistema no formato dia/mês/ano(4 dígitos);
-	$201042014;		- Ajusta a data para 01 de abril de 2014;
+$2:DevName;			- Change bluetooth name;
+	$2:Vassalo;		- Altera o nome do bluetooth para "Vassalo";
 
 $3X;				- Acionamento do motor;
 	$31;			- liga o motor;
@@ -1099,54 +1111,92 @@ $6X;				- Modos de funcionamento;
 			}
 			break;
 // -----------------------------------------------------------------
-			case 1:		// Set-up clock
+			case 1: // Setup calendar
 			{
-				// Getting the parameters
-				aux[0] = sInstr[1];
-				aux[1] = sInstr[2];
-				aux[2] = '\0';
-				tm.Hour = (uint8_t) atoi(aux);
+				// Set-up clock -> $1:h:HHMMSS;
+				if(sInstr[1]==':' && sInstr[2]=='h' && sInstr[3]==':' && sInstr[10]==';')
+				{
+					aux[0] = sInstr[4];
+					aux[1] = sInstr[5];
+					aux[2] = '\0';
+					tm.Hour = (uint8_t) atoi(aux);
 
-				aux[0] = sInstr[3];
-				aux[1] = sInstr[4];
-				aux[2] = '\0';
-				tm.Minute = (uint8_t) atoi(aux);
+					aux[0] = sInstr[6];
+					aux[1] = sInstr[7];
+					aux[2] = '\0';
+					tm.Minute = (uint8_t) atoi(aux);
 
-				aux[0] = sInstr[5];
-				aux[1] = sInstr[6];
-				aux[2] = '\0';
-				tm.Second = (uint8_t) atoi(aux);
+					aux[0] = sInstr[8];
+					aux[1] = sInstr[9];
+					aux[2] = '\0';
+					tm.Second = (uint8_t) atoi(aux);
 
-				RTC.write(tm);
+					RTC.write(tm);
+					summary_Print(0);
+				}
+				// 	Set-up date -> $1:d:DDMMAAAA;
+				else if(sInstr[1]==':' && sInstr[2]=='h' && sInstr[3]==':' && sInstr[12]==';')
+				{
+					// Getting the parameters
+					aux[0] = sInstr[4];
+					aux[1] = sInstr[5];
+					aux[2] = '\0';
+					tm.Day = (uint8_t) atoi(aux);
 
-				summary_Print(0);
+					aux[0] = sInstr[6];
+					aux[1] = sInstr[7];
+					aux[2] = '\0';
+					tm.Month = (uint8_t) atoi(aux);
+
+					char aux2[5];
+					aux2[0] = sInstr[8];
+					aux2[1] = sInstr[9];
+					aux2[2] = sInstr[10];
+					aux2[3] = sInstr[11];
+					aux2[4] = '\0';
+					tm.Year = (uint8_t) (atoi(aux2)-1970);
+
+					RTC.write(tm);
+
+					summary_Print(0);
+
+				}
 			}
 			break;
 // -----------------------------------------------------------------
-			case 2:		// Set-up date
+			case 2:		// Setup Bluetooth device name
 			{
-				// Getting the parameters
-				aux[0] = sInstr[1];
-				aux[1] = sInstr[2];
-				aux[2] = '\0';
-				tm.Day = (uint8_t) atoi(aux);
+				// Setup clock -> $2:BluetoothName;
+				char aux_str[sInstr_SIZE], aux_str2[sInstr_SIZE+7];
+				uint8_t k1=0;
+				if(sInstr[1]==':')
+				{
+					// 3 because 2 and : count 2 characters and one more for '\0'
+					while((k1<sInstr_SIZE-3) && sInstr[k1] != ';')
+					{
+						aux_str[k1] = sInstr[k1+2];
+						k1++;
+//						Serial.println(k1);
+					}
 
-				aux[0] = sInstr[3];
-				aux[1] = sInstr[4];
-				aux[2] = '\0';
-				tm.Month = (uint8_t) atoi(aux);
-
-				char aux2[5];
-				aux2[0] = sInstr[5];
-				aux2[1] = sInstr[6];
-				aux2[2] = sInstr[7];
-				aux2[3] = sInstr[8];
-				aux2[4] = '\0';
-				tm.Year = (uint8_t) (atoi(aux2)-1970);
-
-				RTC.write(tm);
-
-				summary_Print(0);
+					aux_str[k1-2] = '\0';
+					Serial.println("Disconnect!");
+//					wdt_reset();
+//					_delay_ms(3000);
+//					wdt_reset();
+//					_delay_ms(3000);
+//					wdt_reset();
+//					_delay_ms(3000);
+//					strcpy(aux_str2,"AT");
+//					Serial.print(aux_str2);
+					wdt_reset();
+					_delay_ms(3000);
+					strcpy(aux_str2,"AT+NAME");
+					strcat(aux_str2,aux_str);
+					Serial.print(aux_str2);
+					wdt_reset();
+					_delay_ms(1000);
+				}
 			}
 			break;
 // -----------------------------------------------------------------
@@ -1333,7 +1383,7 @@ int main()
 
 	refreshStoredData();
 
-	Serial.begin(9600);
+	Serial.begin(38400);
 	Serial.println("-Acionna WP-");
 
 	while (1)
