@@ -29,13 +29,26 @@ uint8_t opcode;
 #define led_on()			PORTB |=  (1<<5);
 #define led_off()			PORTB &= ~(1<<5);
 
+#define DefOut_k1()			DDRD |=  (1<<2);
+#define DefOut_k2()			DDRD |=  (1<<3);
+#define DefOut_k3()			DDRD |=  (1<<4);
+#define DefOut_led()		DDRB |=  (1<<5);
+
+#define DefIn__Rth()		DDRD &= ~(1<<6);
+#define DefIn__read_k1()	DDRD &= ~(1<<5);
+#define DefIn__read_k3()	DDRD &= ~(1<<7);
+
+
 //#define readPin_Rth			(~PIND & 0b10000000)
 #define readPin_k1_PIN		bit_is_set(PIND, 2)
 
-#define readPin_Rth			bit_is_clear(PIND, 5)
-#define readPin_k1			bit_is_clear(PIND, 7)
-#define readPin_k3			bit_is_clear(PIND, 6)
+#define readPin_k1			bit_is_clear(PIND, 5)
+#define readPin_Rth			bit_is_clear(PIND, 6)
+#define readPin_k3			bit_is_clear(PIND, 7)
 
+#define startTypeK			1		// Partida direta: monofásico
+//#define startTypeK			2		// Partida direta: trifásico
+//#define startTypeK			3		// Partida estrela/triangulo
 //#define read_buttonSignal	bit_is_clear(PIND, 3)
 
 enum states01 {
@@ -252,7 +265,7 @@ void init_WDT()
 //	wdt_enable(WDTO_8S);
 	// WDT enable
 
-	wdt_enable(WDTO_8S);
+	wdt_enable(WDTO_4S);
 }
 void init_ADC()
 {
@@ -304,27 +317,15 @@ void init_Timer1_1Hz()
 }
 void init_IO()
 {
-//	DDRD &= ~(1 << 2);
-//	DDRD &= ~(1 << 3);
-//	DDRD &= ~(1 << 4);
-//
-//	DDRB &= ~(1 << 1);
-//	DDRB &= ~(1 << 2);
-//
-//	DDRC &= ~(1 << 3);
-//
-//	DDRC = 0x00;
-//	DDRD = 0x00;
-
-	DDRD &= ~(1 << 5); // K1 input read
-	DDRD &= ~(1 << 6); // Thermal swith as input!
-	DDRD &= ~(1 << 7); // K3 input read
-
 	// Set triac1, triac2 and led connected pins as output
-	DDRB |= (1 << 5); // Led into arduino nano board!
-	DDRD |= (1 << 2); // Triac A (Motor)
-	DDRD |= (1 << 3); // Triac B to K2
-	DDRD |= (1 << 4); // Triac C to K3
+	DefOut_k1();		// K1 triac A output (motor)
+	DefOut_k2();		// Triac B to K2
+	DefOut_k3();		// Triac C to K3
+	DefOut_led();		// Led into arduino nano board!
+
+	DefIn__Rth();		// Thermal swith as input!
+	DefIn__read_k1();
+	DefIn__read_k3();
 }
 void driveMotor_ON(uint8_t startType)
 {
@@ -395,7 +396,7 @@ void motor_start()
 		timeOn_min = 0;
 		timeOn_sec = 0;
 
-		driveMotor_ON(1);
+		driveMotor_ON(startTypeK);
 		led_on();
 
 		_delay_ms(1);
@@ -485,9 +486,9 @@ double get_Pressure()
 	tempNow = (uint8_t) ((sTempMax*tempNow_XS)/255.0 - sTempMin);
     */
 //	const double Kpsi = 1.45038; // 1 m.c.a. = 1.45038 psi
-//	const double PRessMax = 68.9475729;	// Sensor max pressure [m.c.a.] with 100 psi;
+	const double PRessMax = 68.9475729;	// Sensor max pressure [m.c.a.] with 100 psi;
 //	const double PRessMax = 103.4212;	// Sensor max pressure [m.c.a.] with 150 psi;
-	const double PRessMax = 120.658253;	// Sensor max pressure [m.c.a.] with 174.045 psi;
+//	const double PRessMax = 120.658253;	// Sensor max pressure [m.c.a.] with 174.045 psi;
 
 //	SensorPRessRef/Kpsi
 
@@ -570,7 +571,7 @@ void check_period()
 }
 void check_timeMatch()
 {
-	uint8_t i, nTM_var=0;
+	uint8_t i, nTM_var=1;
 
 	// matching time verify
 	if(!motorStatus)
@@ -630,7 +631,15 @@ void check_thermalSafe()
 }
 void check_gpio()
 {
-	motorStatus = readPin_k1_PIN;
+	if(startTypeK == 1)
+	{
+		motorStatus = readPin_k1_PIN;
+
+	}
+	else
+	{
+		motorStatus = readPin_k1;
+	}
 }
 void check_TimerVar()
 {
@@ -702,32 +711,6 @@ void process_waterPumpControl()
 	 * 0x06 - command line
 	 * */
 
-	if(flag_timeMatch)
-	{
-		flag_timeMatch = 0;
-
-		if(!motorStatus)
-		{
-			motor_start();
-		}
-	}
-
-	if(levelSensorHL && (stateMode == 1))
-	{
-		if(!motorStatus)
-		{
-			motor_start();
-		}
-	}
-
-	if(PRess >= PRessureRef)
-	{
-		if(motorStatus)
-		{
-			motor_stop(0x01);
-		}
-	}
-
 	if(!levelSensorLL)
 	{
 		if(motorStatus)
@@ -736,16 +719,15 @@ void process_waterPumpControl()
 		}
 	}
 
-	if(flag_Th)
+	if(levelSensorHL && (stateMode == 4) && levelSensorLL)
 	{
-		motor_stop(0x03);
-		stateMode = 0;
-		eeprom_write_byte(( uint8_t *)(addr_stateMode), stateMode);
+		if(!motorStatus)
+		{
+			motor_start();
+		}
 	}
-}
-void process_Irrigation()
-{
-	if(flag_timeMatch)
+
+	if(flag_timeMatch && (stateMode != 4))
 	{
 		flag_timeMatch = 0;
 
@@ -755,11 +737,14 @@ void process_Irrigation()
 		}
 	}
 
-	if(PRess >= PRessureRef)
+	if(PRessureRef)					// Has a valid number mean this function is activated
 	{
-		if(motorStatus)
+		if(PRess >= PRessureRef)
 		{
-			motor_stop(0x01);
+			if(motorStatus)
+			{
+				motor_stop(0x01);
+			}
 		}
 	}
 
@@ -797,16 +782,16 @@ void process_Mode()
 			process_motorPeriodDecision();
 			break;
 
-		case 2:
+		case 2:	// For irrigation mode. Start in a programmed time.
 			process_waterPumpControl();
 			break;
 
-		case 3:
+		case 3:	// For reservoir only. Works in a inverted pressured! Caution!
 			process_valveControl();
 			break;
 
-		case 4:
-			process_Irrigation();
+		case 4:	// Is that for a water pump controlled by water sensors. Do not use programmed time.
+			process_waterPumpControl();
 			break;
 
 		default:
@@ -854,11 +839,11 @@ void summary_Print(uint8_t opt)
 				case 2:
 					if(nTM == 1)
 					{
-						sprintf(buffer," Motor: Liga %dx as %2.d:%.2d", nTM, HourOnTM[0], MinOnTM[0]);
+						sprintf(buffer," Irrig: Liga %dx as %2.d:%.2d", nTM, HourOnTM[0], MinOnTM[0]);
 					}
 					else
 					{
-						sprintf(buffer," Motor: Liga %dx/dia",nTM);
+						sprintf(buffer," Irrig: Liga %dx/dia",nTM);
 					}
 					break;
 
@@ -874,14 +859,11 @@ void summary_Print(uint8_t opt)
 					break;
 
 				case 4:
-					if(nTM == 1)
-					{
-						sprintf(buffer," Reserv: Liga %dx as %2.d:%.2d", nTM, HourOnTM[0], MinOnTM[0]);
-					}
-					else
-					{
-						sprintf(buffer," Reserv: Liga %dx/dia",nTM);
-					}
+					sprintf(buffer," WPsen: Liga com HL");
+					break;
+
+				case 5:
+					sprintf(buffer," Modo:Auto HL");
 					break;
 
 				default:
@@ -971,7 +953,7 @@ void summary_Print(uint8_t opt)
 			break;
 
 		case 7:
-			sprintf(buffer,"P:%d Fth:%d Rth:%d Ftm:%d k1:%d k3:%d", PRess, flag_Th, readPin_Rth, flag_timeMatch, readPin_k1_PIN, readPin_k3);
+			sprintf(buffer,"P:%d Fth:%d Rth:%d Ftm:%d k1:%d k3:%d", PRess, flag_Th, readPin_Rth, flag_timeMatch, motorStatus, readPin_k3);
 			Serial.println(buffer);
 
 			sprintf(buffer,"LL:%d ML:%d HL:%d  ",levelSensorLL, levelSensorML, levelSensorHL);
@@ -997,11 +979,66 @@ void summary_Print(uint8_t opt)
 			break;
 	}
 }
+void RTC_update()
+{
+	if(tm.Second == 59)
+	{
+		tm.Second = 0;
+		if(tm.Minute == 59)
+		{
+			tm.Minute = 0;
+			if(tm.Hour == 23)
+			{
+				tm.Hour = 0;
+				uint8_t month31, month30;
+				if((tm.Month == 1) || (tm.Month == 3) || (tm.Month == 5) || (tm.Month == 7) || (tm.Month == 8) || (tm.Month == 10) || (tm.Month == 12))
+				{
+					month31 = 1;
+				}
+				else
+				{
+					month30 = 1;
+				}
+
+				if((tm.Day == 30 && month30) || (tm.Day == 31 && month31))
+				{
+					tm.Day = 1;
+					if(tm.Month == 12)
+					{
+						tm.Month = 1;
+						tm.Year++;
+					}
+					else
+					{
+						tm.Month++;
+					}
+				}
+				else
+				{
+					tm.Day++;
+				}
+			}
+			else
+			{
+				tm.Hour++;
+			}
+		}
+		else
+		{
+			tm.Minute++;
+		}
+	}
+	else
+	{
+		tm.Second++;
+	}
+}
 void refreshVariables()
 {
 	if (flag_1s)
 	{
 		flag_1s = 0;
+//		RTC_update();
 		RTC.read(tm);
 
 		check_gpio();			// Check drive status pin;
@@ -1578,7 +1615,7 @@ int main()
 	init_Timer1_1Hz();
 	init_ADC();
 	init_WDT();
-	Serial.begin(38400);
+	Serial.begin(9600);//38400);
 	sei();
 
 	summary_Print(8);
