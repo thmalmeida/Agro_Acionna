@@ -1,16 +1,16 @@
-#include <util/delay.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/eeprom.h>
 #include <avr/wdt.h>
 
+#include <util/delay.h>
+#include <util/delay_basic.h>
 #include <stdlib.h>
 
 #include <Arduino.h>
 
 #include "RTC/Time.h"
 #include "RTC/DS1307RTC.h"
-
 
 //const char *monthName[12] = {
 //	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -26,8 +26,8 @@ uint8_t opcode;
 #define k2_off()			PORTD &= ~(1<<3);
 #define k3_on()				PORTD |=  (1<<4);
 #define k3_off()			PORTD &= ~(1<<4);
-#define led_on()			PORTB |=  (1<<5);
-#define led_off()			PORTB &= ~(1<<5);
+#define drive_led_on()		PORTB |=  (1<<5);
+#define drive_led_off()		PORTB &= ~(1<<5);
 
 #define DefOut_k1()			DDRD |=  (1<<2);
 #define DefOut_k2()			DDRD |=  (1<<3);
@@ -63,13 +63,14 @@ const uint8_t addr_LevelRef 			= 2;	// 4 bytes
 const uint8_t addr_standBy_min 			= 5;	// 2 bytes
 const uint8_t addr_PRessureRef 			= 7;	// 1 byte
 const uint8_t addr_PRessureRef_Valve	= 8;	// 1 byte
-const uint8_t addr_SensorPRessRef		= 9;	// 1 byte
+const uint8_t addr_PRessureMax_Sensor	= 9;	// 1 byte
 const uint8_t addr_motorTimerE 			= 10;	// 2 byte
 const uint8_t addr_HourOnTM 			= 30;	// 9 bytes
 const uint8_t addr_MinOnTM 				= 39;	// nTM byte(s)
 const uint8_t addr_nTM 					= 48;	// 1 byte
 const uint8_t addr_motorTimerStart1 	= 65;	// 2 bytes
 const uint8_t addr_motorTimerStart2 	= 67;	// 2 bytes
+const uint8_t addr_PREssurePer 			= 69;	// 1 byte
 
 // Wake up interrupts
 uint8_t flag_WDRF = 0;			// Watchdog System Reset Flag
@@ -84,8 +85,8 @@ uint8_t waitPowerOn_sec = 0;
 //uint8_t powerOff_min = 0;
 //uint8_t powerOff_sec = 0;
 // Motor timers in milliseconds
-uint8_t motorTimerStart1 = 35;
-uint16_t motorTimerStart2 = 200;
+const uint8_t motorTimerStart1 = 35;
+const uint16_t motorTimerStart2 = 200;
 
 uint16_t timeOn_min = 0;
 uint8_t  timeOn_sec = 0;
@@ -95,13 +96,16 @@ uint8_t  timeOff_sec = 0;
 uint16_t motorTimerE = 0;
 uint8_t PRessureRef = 0;
 uint8_t PRessureRef_Valve = 0;
-uint8_t SensorPRessRef = 150; // units in psi
+uint8_t PRessureMax_Sensor = 100; // units in psi
+uint8_t PRessurePer = 85;
 
 int PRess;
+int PRessHold;
 int Pd = 0;
 
 uint8_t flag_AwaysON = 0;
 uint8_t flag_timeMatch = 0;
+uint8_t flag_PressureDown = 1;
 uint8_t flag_01 = 0;
 uint8_t flag_02 = 0;
 uint8_t flag_03 = 0;
@@ -396,8 +400,10 @@ void motor_start()
 		timeOn_min = 0;
 		timeOn_sec = 0;
 
+		PRessHold = PRess;
+
 		driveMotor_ON(startTypeK);
-		led_on();
+		drive_led_on();
 
 		_delay_ms(1);
 
@@ -432,7 +438,7 @@ void motor_stop(uint8_t reason)
 	waitPowerOn_min = waitPowerOn_min_standBy;
 
 	driveMotor_OFF();
-	led_off();
+	drive_led_off();
 	_delay_ms(1);
 
 	motorStatus = readPin_k1_PIN;
@@ -485,12 +491,13 @@ double get_Pressure()
 	temp = (TempMax*xs/255) - TempMin
 	tempNow = (uint8_t) ((sTempMax*tempNow_XS)/255.0 - sTempMin);
     */
-//	const double Kpsi = 1.45038; // 1 m.c.a. = 1.45038 psi
-	const double PRessMax = 68.9475729;	// Sensor max pressure [m.c.a.] with 100 psi;
+
+	const double Kpsi = 0.7030768118;
+//	const double PRessMax = 68.9475729;	// Sensor max pressure [m.c.a.] with 100 psi;
 //	const double PRessMax = 103.4212;	// Sensor max pressure [m.c.a.] with 150 psi;
 //	const double PRessMax = 120.658253;	// Sensor max pressure [m.c.a.] with 174.045 psi;
 
-//	SensorPRessRef/Kpsi
+	double PRessMax = Kpsi*PRessureMax_Sensor;
 
 	Pd = read_ADC(7);
 	return (PRessMax)*(Pd-102.4)/(921.6-102.4);
@@ -688,6 +695,23 @@ void check_TimerVar()
 		}
 	}
 }
+void check_pressureDown()
+{
+	if(stateMode == 5)
+	{
+		if(motorStatus)
+		{
+			if(PRess > PRessHold)
+			{
+				PRessHold = PRess;
+			}
+			else if(PRess < ((PRessurePer/100.0)*PRessHold))
+			{
+				flag_PressureDown = 1;
+			}
+		}
+	}
+}
 void process_valveControl()
 {
 	if(flag_timeMatch && (PRess >= PRessureRef_Valve))
@@ -709,6 +733,7 @@ void process_waterPumpControl()
 	 * 0x04 - time out
 	 * 0x05 - red time
 	 * 0x06 - command line
+	 * 0x07 - broke pressure
 	 * */
 
 	if(!levelSensorLL)
@@ -745,6 +770,15 @@ void process_waterPumpControl()
 			{
 				motor_stop(0x01);
 			}
+		}
+	}
+
+	if(stateMode == 5)
+	{
+		if(motorStatus && flag_PressureDown)
+		{
+			flag_PressureDown = 0;
+			motor_stop(0x07);
 		}
 	}
 
@@ -791,6 +825,10 @@ void process_Mode()
 			break;
 
 		case 4:	// Is that for a water pump controlled by water sensors. Do not use programmed time.
+			process_waterPumpControl();
+			break;
+
+		case 5:	// For irrigation mode and instantly low pressure turn motor off.
 			process_waterPumpControl();
 			break;
 
@@ -859,12 +897,21 @@ void summary_Print(uint8_t opt)
 					break;
 
 				case 4:
-					sprintf(buffer," WPsen: Liga com HL");
+					sprintf(buffer," Modo: Auto HL");
 					break;
 
 				case 5:
-					sprintf(buffer," Modo:Auto HL");
+					if(nTM == 1)
+					{
+						sprintf(buffer," IrrigLow: Liga %dx as %2.d:%.2d", nTM, HourOnTM[0], MinOnTM[0]);
+					}
+					else
+					{
+						sprintf(buffer," IrrigLow: Liga %dx/dia",nTM);
+					}
 					break;
+					break;
+
 
 				default:
 					strcpy(buffer,"sMode Err");
@@ -917,15 +964,23 @@ void summary_Print(uint8_t opt)
 		case 3:
 			sprintf(buffer,"Motor:%d Fth:%d Rth:%d Pr:%d ", motorStatus, flag_Th, readPin_Rth, PRess);
 			Serial.print(buffer);
-			if(stateMode == 3)
+			switch (stateMode)
 			{
-				sprintf(buffer,"Pref:%d ", PRessureRef_Valve);
-				Serial.println(buffer);
-			}
-			else
-			{
-				sprintf(buffer,"Pref:%d ", PRessureRef);
-				Serial.println(buffer);
+				case 3:
+					sprintf(buffer,"Pref:%d ", PRessureRef_Valve);
+					Serial.println(buffer);
+					break;
+
+				case 5:
+					sprintf(buffer,"Pref:%d, Pper:%d ", PRessureRef, PRessurePer);
+					Serial.println(buffer);
+					break;
+
+				default:
+					sprintf(buffer,"Pref:%d, Ptec: %d, Pper:%d ", PRessureRef, PRessureMax_Sensor, PRessurePer);
+					Serial.println(buffer);
+					break;
+
 			}
 			break;
 
@@ -962,7 +1017,7 @@ void summary_Print(uint8_t opt)
 			sprintf(buffer,"LL:%d ML:%d HL:%d  ",levelSensorLL_d, levelSensorML_d, levelSensorHL_d);
 			Serial.println(buffer);
 			break;
-			
+
 		case 8:
 			sprintf(buffer,"WDRF:%d BORF:%d EXTRF:%d PORF:%d", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
 			Serial.println(buffer);
@@ -1050,6 +1105,8 @@ void refreshVariables()
 		check_thermalSafe();	// thermal relay check;
 		check_levelSensors();	// level sensors;
 
+		check_pressureDown();
+
 		if(flag_debug)
 		{
 			summary_Print(7);
@@ -1074,6 +1131,8 @@ void refreshStoredData()
 
 	PRessureRef = eeprom_read_byte((uint8_t *)(addr_PRessureRef));
 	PRessureRef_Valve = eeprom_read_byte((uint8_t *)(addr_PRessureRef_Valve));
+	PRessurePer = eeprom_read_byte((uint8_t *)(addr_PREssurePer));
+	PRessureMax_Sensor = eeprom_read_byte((uint8_t *)(addr_PRessureMax_Sensor));
 
 	nTM = eeprom_read_byte((uint8_t *)(addr_nTM));
 	uint8_t i;
@@ -1098,6 +1157,7 @@ $0X;				Verificar detalhes - Detalhes simples (tempo).
 		$03:s:72;	- Set pressure ref [m.c.a.];
 		$03:v:32;	- Set pressure for valve load turn on and fill reservoir;
 		$03:p:150;	- Set sensor max pressure ref to change the scale [psi];
+		$03:b:85;	- Set to 85% the pressure min bellow the current pressure to avoid pipe broken;
 	$04;			- Verifica detalhes do nível de água no poço e referência 10 bits;
 		$04:0;		- Interrompe o envio continuo das variáveis de pressão e nível;
 		$04:1;		- Envia continuamente valores de pressão e nível;
@@ -1253,14 +1313,17 @@ $6X;				- Modos de funcionamento;
 							aux2[2] = sInstr[6];
 							aux2[3] = sInstr[7];
 							aux2[4] = '\0';
-							SensorPRessRef = (uint8_t) atoi(aux2);
+							PRessureMax_Sensor = (uint8_t) atoi(aux2);
 
-							uint8_t lbyteRef = 0, hbyteRef = 0;
-							lbyteRef = motorTimerE;
-							hbyteRef = (motorTimerE >> 8);
-
-							eeprom_write_byte((uint8_t *)(addr_motorTimerE+1), hbyteRef);
-							eeprom_write_byte((uint8_t *)(addr_motorTimerE), lbyteRef);
+							eeprom_write_byte((uint8_t *)(addr_PRessureMax_Sensor), PRessureMax_Sensor);
+						}
+						else if(sInstr[2]==':' && sInstr[3] == 'b' && sInstr[4] == ':' && sInstr[7] == ';')
+						{
+							aux[0] = sInstr[5];
+							aux[1] = sInstr[6];
+							aux[2] = '\0';
+							PRessurePer = (uint8_t) atoi(aux);
+							eeprom_write_byte((uint8_t *)(addr_PREssurePer), PRessurePer);
 						}
 						else
 							summary_Print(statusCommand);
@@ -1599,7 +1662,9 @@ ISR(TIMER1_COMPA_vect)
 	flag_1s = 1;
 }
 
-int main()
+//String stringOne('a');
+
+int main(void)
 {
 	// PowerOFF / Reset verification
 	cli();
@@ -1609,13 +1674,13 @@ int main()
 	flag_PORF 	= (PORF & MCUSR);
 	MCUSR &= 0x00;
 
-	// Initialize arduino hardware requirements.	
+	// Initialize arduino hardware requirements.
 	init();
 	init_IO();
 	init_Timer1_1Hz();
 	init_ADC();
 	init_WDT();
-	Serial.begin(9600);//38400);
+	Serial.begin(38400);
 	sei();
 
 	summary_Print(8);
@@ -1642,108 +1707,110 @@ int main()
 		wdt_reset();
 		process_Mode();
 	}
+
+	return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//	if(flag_WDRF || flag_BORF || flag_EXTRF || flag_PORF)
-//	{
-//		printf(buffer,"WDRF: %d, BORF: %d, EXTRF: %d, PORF: %d", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
-//		printf(buffer,"W:%d B:%d E:%d P:%d ", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
-//		Serial.println(buffer);
-//	}
-
-//	char str[20];
-//	int value=0;
-//	sprintf(str,"D: %2d\n", value++);
-//	Serial.println(str);
-
-//void init_pwm2()
-//{
-//	TCCR2A = 0b00000010; // TCCR2A ==>> COM2A1 COM2A0 COM2B1 COM2B0 - - WGM21 WGM20
-//	TCCR2B = 0b00000111; // TCCR2B ==>> FOC2A FOC2B - - WGM22 CS22 CS21 CS20
-//	TIMSK2 = 0b00000010; // TIMSK2 ==>> - - - - - OCIE2B OCIE2A TOIE2
-//	OCR2A = 251;
 //
-//}
-//void stop_pwm2()
-//{
-////	TCCR2A ==>> COM2A1 COM2A0 COM2B1 COM2B0 - - WGM21 WGM20
-//	TCCR2A = 0b00000011;
 //
-//	// TCCR2B ==> FOC2A FOC2B - - WGM22 CS22 CS21 CS20
-//	TCCR2B = 0b00001000;
-//	OCR2A = 200;
 //
-//	// TIMSK2 ==>> - - - - - OCIE2B OCIE2A TOIE2
-//	TIMSK2 = 0b00000010;
 //
-////     Turn Red Led off.
-//	PORTD &= ~(1 << PD2);
-//}
-//void print2digits(int number)
-//{
-//	if (number >= 0 && number < 10)
-//	{
-//		Serial.write('0');
-//	}
-//	Serial.print(number);
-//}
-//bool getTime(const char *str)
-//{
-//	int Hour, Min, Sec;
 //
-//	if (sscanf(str, "%d:%d:%d", &Hour, &Min, &Sec) != 3) return false;
-//	tm.Hour = Hour;
-//	tm.Minute = Min;
-//	tm.Second = Sec;
-//	return true;
-//}
-//bool getDate(const char *str)
-//{
-//	char Month[12];
-//	int Day, Year;
-//	uint8_t monthIndex;
 //
-//	if (sscanf(str, "%s %d %d", Month, &Day, &Year) != 3) return false;
-//	for (monthIndex = 0; monthIndex < 12; monthIndex++)
-//	{
-//		if (strcmp(Month, monthName[monthIndex]) == 0) break;
-//	}
-//	if (monthIndex >= 12) return false;
-//	tm.Day = Day;
-//	tm.Month = monthIndex + 1;
-//	tm.Year = CalendarYrToTm(Year);
 //
-//	return true;
-//}
-//void clockSync_PC()
-//{
-////	bool parse=false;
-////	bool config=false;
-////
-////	// get the date and time the compiler was run
-////	if (getDate(__DATE__) && getTime(__TIME__))
+//
+//
+//
+//
+//
+//
+//
+//
+//
+////	if(flag_WDRF || flag_BORF || flag_EXTRF || flag_PORF)
 ////	{
-////		parse = true;
-////		// and configure the RTC with this info
-////		if (RTC.write(tm))
-////		{
-////			config = true;
-////		}
+////		printf(buffer,"WDRF: %d, BORF: %d, EXTRF: %d, PORF: %d", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
+////		printf(buffer,"W:%d B:%d E:%d P:%d ", flag_WDRF, flag_BORF, flag_EXTRF, flag_PORF);
+////		Serial.println(buffer);
 ////	}
+//
+////	char str[20];
+////	int value=0;
+////	sprintf(str,"D: %2d\n", value++);
+////	Serial.println(str);
+//
+////void init_pwm2()
+////{
+////	TCCR2A = 0b00000010; // TCCR2A ==>> COM2A1 COM2A0 COM2B1 COM2B0 - - WGM21 WGM20
+////	TCCR2B = 0b00000111; // TCCR2B ==>> FOC2A FOC2B - - WGM22 CS22 CS21 CS20
+////	TIMSK2 = 0b00000010; // TIMSK2 ==>> - - - - - OCIE2B OCIE2A TOIE2
+////	OCR2A = 251;
 ////
-//}
+////}
+////void stop_pwm2()
+////{
+//////	TCCR2A ==>> COM2A1 COM2A0 COM2B1 COM2B0 - - WGM21 WGM20
+////	TCCR2A = 0b00000011;
+////
+////	// TCCR2B ==> FOC2A FOC2B - - WGM22 CS22 CS21 CS20
+////	TCCR2B = 0b00001000;
+////	OCR2A = 200;
+////
+////	// TIMSK2 ==>> - - - - - OCIE2B OCIE2A TOIE2
+////	TIMSK2 = 0b00000010;
+////
+//////     Turn Red Led off.
+////	PORTD &= ~(1 << PD2);
+////}
+////void print2digits(int number)
+////{
+////	if (number >= 0 && number < 10)
+////	{
+////		Serial.write('0');
+////	}
+////	Serial.print(number);
+////}
+////bool getTime(const char *str)
+////{
+////	int Hour, Min, Sec;
+////
+////	if (sscanf(str, "%d:%d:%d", &Hour, &Min, &Sec) != 3) return false;
+////	tm.Hour = Hour;
+////	tm.Minute = Min;
+////	tm.Second = Sec;
+////	return true;
+////}
+////bool getDate(const char *str)
+////{
+////	char Month[12];
+////	int Day, Year;
+////	uint8_t monthIndex;
+////
+////	if (sscanf(str, "%s %d %d", Month, &Day, &Year) != 3) return false;
+////	for (monthIndex = 0; monthIndex < 12; monthIndex++)
+////	{
+////		if (strcmp(Month, monthName[monthIndex]) == 0) break;
+////	}
+////	if (monthIndex >= 12) return false;
+////	tm.Day = Day;
+////	tm.Month = monthIndex + 1;
+////	tm.Year = CalendarYrToTm(Year);
+////
+////	return true;
+////}
+////void clockSync_PC()
+////{
+//////	bool parse=false;
+//////	bool config=false;
+//////
+//////	// get the date and time the compiler was run
+//////	if (getDate(__DATE__) && getTime(__TIME__))
+//////	{
+//////		parse = true;
+//////		// and configure the RTC with this info
+//////		if (RTC.write(tm))
+//////		{
+//////			config = true;
+//////		}
+//////	}
+//////
+////}
