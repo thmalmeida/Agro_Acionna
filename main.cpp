@@ -41,14 +41,15 @@ uint8_t opcode;
 
 //#define readPin_Rth			(~PIND & 0b10000000)
 #define readPin_k1_PIN		bit_is_set(PIND, 2)
+#define readPin_k2_PIN		bit_is_set(PIND, 3)
 
-#define readPin_k1			bit_is_clear(PIND, 5)
 #define readPin_Rth			bit_is_clear(PIND, 6)
+#define readPin_k1			bit_is_clear(PIND, 5)
 #define readPin_k3			bit_is_clear(PIND, 7)
 
-#define startTypeK			1		// Partida direta: monofásico
-//#define startTypeK			2		// Partida direta: trifásico
-//#define startTypeK			3		// Partida estrela/triangulo
+//#define startTypeK		1		// Partida direta: monofásico
+//#define startTypeK		2		// Partida direta: trifásico
+#define startTypeK			3		// Partida estrela/triangulo
 //#define read_buttonSignal	bit_is_clear(PIND, 3)
 
 enum states01 {
@@ -96,8 +97,9 @@ uint8_t  timeOff_sec = 0;
 uint16_t motorTimerE = 0;
 uint8_t PRessureRef = 0;
 uint8_t PRessureRef_Valve = 0;
-uint8_t PRessureMax_Sensor = 100; // units in psi
+uint8_t PRessureMax_Sensor = 150; // units in psi
 uint8_t PRessurePer = 85;
+uint8_t PRessureRef_Low = 10;
 
 int PRess;
 int PRessHold;
@@ -105,12 +107,15 @@ int Pd = 0;
 
 uint8_t flag_AwaysON = 0;
 uint8_t flag_timeMatch = 0;
-uint8_t flag_PressureDown = 1;
+uint8_t flag_PressureUnstable = 0;
+
 uint8_t flag_01 = 0;
 uint8_t flag_02 = 0;
 uint8_t flag_03 = 0;
 uint8_t motorStatus = 0;
+uint8_t motorStatus2 = 0;
 uint8_t flag_Th = 0;
+int levelSensorLLcount = 10;
 
 //uint16_t motor_timerON = 0;
 //uint16_t motor_timerOFF = 0;
@@ -158,6 +163,7 @@ uint8_t dayLog_OFF[nLog], monthLog_OFF[nLog];
 uint16_t levelSensorLL, levelSensorML, levelSensorHL;
 uint16_t levelSensorLL_d, levelSensorML_d, levelSensorHL_d;
 
+uint8_t flag_conf_pressureUnstable = 0;
 
 uint16_t read_ADC(uint8_t channel)
 {
@@ -352,32 +358,61 @@ void driveMotor_ON(uint8_t startType)
 			wdt_reset();
 
 			k3_off();
-			uint32_t countK = 0;
-			while(readPin_k3)
-			{
-				countK++;
-				if(countK>=120000)
-				{
-					k1_off();
-					k2_off();
-					k3_off();
-					return;
-				}
-			}
+//			uint32_t countK = 0;
+//			while(readPin_k3)
+//			{
+//				countK++;
+//				if(countK>=120000)
+//				{
+//					k1_off();
+//					k2_off();
+//					k3_off();
+//					Serial.println("K3 error");
+//					return;
+//				}
+//			}
 		//			Serial.print("FuCK: ");
 		//			Serial.println(count);
 			_delay_ms(motorTimerStart2);
 			k2_on();
 			break;
+
+		case 4:
+			k2_on();
+			motorStatus2 = readPin_k2_PIN;
+			break;
 	}
 }
-void driveMotor_OFF()
+void driveMotor_OFF(uint8_t kontactor)
 {
-	k1_off();
-	k2_off();
-	k3_off();
+	switch(kontactor)
+	{
+		case 0:
+			k1_off();
+			k2_off();
+			k3_off();
+			break;
+
+		case 1:
+			k1_off();
+			break;
+
+		case 2:
+			k2_off();
+			break;
+
+		case 3:
+			k3_off();
+			break;
+
+		default:
+			k1_off();
+			k2_off();
+			k3_off();
+			break;
+	}
 }
-void motor_start()
+void motor_start(uint8_t startType)
 {
 	if(!flag_waitPowerOn)
 	{
@@ -402,7 +437,7 @@ void motor_start()
 
 		PRessHold = PRess;
 
-		driveMotor_ON(startTypeK);
+		driveMotor_ON(startType);
 		drive_led_on();
 
 		_delay_ms(1);
@@ -437,11 +472,12 @@ void motor_stop(uint8_t reason)
 	flag_waitPowerOn = 1;
 	waitPowerOn_min = waitPowerOn_min_standBy;
 
-	driveMotor_OFF();
+	driveMotor_OFF(0);
 	drive_led_off();
 	_delay_ms(1);
 
 	motorStatus = readPin_k1_PIN;
+	motorStatus2 = readPin_k2_PIN;
 }
 double get_Pressure()
 {
@@ -509,10 +545,21 @@ void get_levelSensors()
 	levelSensorLL_d = read_ADC(0);
 
 	if(levelSensorLL_d < levelRef_10bit)
+	{
 		levelSensorLL = 1;
+		levelSensorLLcount = 5;
+	}
 	else
-		levelSensorLL = 0;
-
+	{
+		if(levelSensorLLcount)
+		{
+			levelSensorLLcount--;
+		}
+		else
+		{
+			levelSensorLL = 0;
+		}
+	}
 
 	// Select ADC1 - ML sensor
 	levelSensorML_d = read_ADC(1);
@@ -612,27 +659,30 @@ void check_timeMatch()
 }
 void check_thermalSafe()
 {
-	if(motorStatus)
+	if(stateMode != 3)
 	{
-		if(readPin_Rth)
+		if(motorStatus)
 		{
-			uint16_t countThermal = 50000;
-			Serial.println("Th0");
-			while(readPin_Rth && countThermal)
+			if(readPin_Rth)
 			{
-				countThermal--;
-			}
-			Serial.println("Th1");
-			if(!countThermal)
-			{
-				flag_Th = 1;
+				uint16_t countThermal = 50000;
+				Serial.println("Th0");
+				while(readPin_Rth && countThermal)
+				{
+					countThermal--;
+				}
+				Serial.println("Th1");
+				if(!countThermal)
+				{
+					flag_Th = 1;
+				}
+				else
+					flag_Th = 0;
 			}
 			else
+			{
 				flag_Th = 0;
-		}
-		else
-		{
-			flag_Th = 0;
+			}
 		}
 	}
 }
@@ -641,6 +691,7 @@ void check_gpio()
 	if(startTypeK == 1)
 	{
 		motorStatus = readPin_k1_PIN;
+		motorStatus2 = readPin_k2_PIN;
 
 	}
 	else
@@ -695,9 +746,9 @@ void check_TimerVar()
 		}
 	}
 }
-void check_pressureDown()
+void check_pressureUnstable()	// this starts to check quick variation of pressure from high to low after 2 minutes on
 {
-	if(stateMode == 5)
+	if(stateMode == 5 && timeOn_min > 2)
 	{
 		if(motorStatus)
 		{
@@ -707,58 +758,99 @@ void check_pressureDown()
 			}
 			else if(PRess < ((PRessurePer/100.0)*PRessHold))
 			{
-				flag_PressureDown = 1;
+				flag_PressureUnstable = 1;
+			}
+		}
+	}
+}
+void check_pressureDown()		// this check if pressure is still low after 3 minutes on;
+{
+//	if(flag_conf_pressureUnstable && (timeOn_min > 3)
+	if(stateMode == 5 && (timeOn_min > 3))
+	{
+		if(motorStatus)
+		{
+			if(PRess < PRessureRef_Low)
+			{
+				// turn load off;
 			}
 		}
 	}
 }
 void process_valveControl()
 {
-	if(flag_timeMatch && (PRess >= PRessureRef_Valve))
+	if(flag_timeMatch || (PRess >= PRessureRef_Valve))
 	{
 		flag_timeMatch &= 0;
 
 		if(!motorStatus)
 		{
-			motor_start();
+			motor_start(1);
 		}
 	}
 }
 void process_waterPumpControl()
 {
-	/*
-	 * 0x01 - pressure
-	 * 0x02 - level
-	 * 0x03 - thermal
-	 * 0x04 - time out
-	 * 0x05 - red time
-	 * 0x06 - command line
-	 * 0x07 - broke pressure
-	 * */
+	// Starts the base motor 1 when the time matches
+	if(flag_timeMatch && (stateMode != 0))
+	{
+		flag_timeMatch = 0;
 
+		// in the case mode 4, turn second motor off and clean the wait time;
+		if(motorStatus2)
+		{
+			driveMotor_OFF(2);
+			motorStatus2 = readPin_k2_PIN;
+		}
+
+		if(!motorStatus)
+		{
+			motor_start(startTypeK); // 1 option starts the k1 kontactor only
+		}
+	}
+
+	//
+	if(levelSensorHL && levelSensorLL && (stateMode == 4)  && periodo)
+	{
+		if(!motorStatus && !motorStatus2)
+		{
+			motor_start(4);	// 4 option starts the k2 kontactor only
+		}
+	}
+
+	if(levelSensorHL && (stateMode == 6) && levelSensorLL)
+	{
+		if(!motorStatus)
+		{
+			motor_start(4);
+		}
+	}
+
+	// Turn all motors off when low level sensor open
 	if(!levelSensorLL)
 	{
-		if(motorStatus)
+		if(motorStatus || motorStatus2)
 		{
 			motor_stop(0x02);
 		}
 	}
 
-	if(levelSensorHL && (stateMode == 4) && levelSensorLL)
+	if((stateMode == 4) && !periodo)
 	{
-		if(!motorStatus)
+		if(motorStatus2)
 		{
-			motor_start();
+			driveMotor_OFF(2);
+			motorStatus2 = readPin_k2_PIN;
 		}
 	}
 
-	if(flag_timeMatch && (stateMode != 4))
+	if(stateMode == 5)
 	{
-		flag_timeMatch = 0;
-
-		if(!motorStatus)
+		if(motorStatus && flag_PressureUnstable)
 		{
-			motor_start();
+			flag_PressureUnstable = 0;
+			motor_stop(0x07);
+			stateMode = 0;
 		}
 	}
 
@@ -769,21 +861,19 @@ void process_waterPumpControl()
 			if(motorStatus)
 			{
 				motor_stop(0x01);
-			}
-		}
-	}
 
-	if(stateMode == 5)
-	{
-		if(motorStatus && flag_PressureDown)
-		{
-			flag_PressureDown = 0;
-			motor_stop(0x07);
+				if(stateMode == 5)
+				{
+					stateMode = 0;
+				}
+			}
 		}
 	}
 
 	if(flag_Th)
 	{
+		flag_Th = 0;
+
 		motor_stop(0x03);
 		stateMode = 0;
 		eeprom_write_byte(( uint8_t *)(addr_stateMode), stateMode);
@@ -810,6 +900,7 @@ void process_Mode()
 	switch (stateMode)
 	{
 		case 0:	// System Down!
+			process_waterPumpControl();
 			break;
 
 		case 1:	// Night Working;
@@ -832,6 +923,10 @@ void process_Mode()
 			process_waterPumpControl();
 			break;
 
+		case 6:	// Is that for a water pump controlled by water sensors. Do not use programmed time.
+			process_waterPumpControl();
+			break;
+
 		default:
 			stateMode = 0;
 			Serial.println("Standby");
@@ -846,6 +941,10 @@ void process_Mode()
 			if(timeOn_min >= motorTimerE)
 			{
 				motor_stop(0x04);
+				if(stateMode == 5)
+				{
+					stateMode = 0;
+				}
 			}
 		}
 	}
@@ -861,7 +960,7 @@ void summary_Print(uint8_t opt)
 			sprintf(buffer," UP:%.2d:%.2d:%.2d, d:%d m:%d", hour(), minute(), second(), day()-1, month()-1);
 			Serial.println(buffer);
 
-			sprintf(buffer," P:%d k1:%d",periodo, motorStatus);
+			sprintf(buffer,"mode:%d p:%d k1:%d k2:%d",stateMode, periodo, motorStatus, motorStatus2);
 			Serial.println(buffer);
 
 			switch (stateMode)
@@ -897,7 +996,14 @@ void summary_Print(uint8_t opt)
 					break;
 
 				case 4:
-					sprintf(buffer," Modo: Auto HL");
+					if(nTM == 1)
+					{
+						sprintf(buffer," 2bombHL: Liga %dx as %2.d:%.2d", nTM, HourOnTM[0], MinOnTM[0]);
+					}
+					else
+					{
+						sprintf(buffer," 2bombHL: Liga %dx/dia",nTM);
+					}
 					break;
 
 				case 5:
@@ -910,6 +1016,18 @@ void summary_Print(uint8_t opt)
 						sprintf(buffer," IrrigLow: Liga %dx/dia",nTM);
 					}
 					break;
+					break;
+
+				case 6:
+					if(nTM == 1)
+					{
+						sprintf(buffer," IrrHL: Liga %dx as %2.d:%.2d", nTM, HourOnTM[0], MinOnTM[0]);
+					}
+					else
+					{
+						sprintf(buffer," IrrHL: Liga %dx/dia",nTM);
+					}
+
 					break;
 
 
@@ -967,7 +1085,7 @@ void summary_Print(uint8_t opt)
 			switch (stateMode)
 			{
 				case 3:
-					sprintf(buffer,"Pref:%d ", PRessureRef_Valve);
+					sprintf(buffer,"Pref:%d, Ptec: %d ", PRessureRef_Valve, PRessureMax_Sensor);
 					Serial.println(buffer);
 					break;
 
@@ -1093,19 +1211,21 @@ void refreshVariables()
 	if (flag_1s)
 	{
 		flag_1s = 0;
-//		RTC_update();
-		RTC.read(tm);
+		RTC_update();
+//		RTC.read(tm);
 
-		check_gpio();			// Check drive status pin;
-		check_period();			// Period verify;
-		check_timeMatch();		// time matches flag;
-		check_TimerVar();		// drive timers
+		check_gpio();				// Check drive status pin;
+		check_period();				// Period verify;
+		check_timeMatch();			// time matches flag;
+		check_TimerVar();			// drive timers
 
-		check_pressure();		// get and check pressure system;
-		check_thermalSafe();	// thermal relay check;
-		check_levelSensors();	// level sensors;
+		check_pressure();			// get and check pressure system;
 
-		check_pressureDown();
+		check_thermalSafe();		// thermal relay check;
+		check_levelSensors();		// level sensors;
+
+		check_pressureUnstable();	// Pressure
+		check_pressureDown();		// check for open pipe;
 
 		if(flag_debug)
 		{
@@ -1115,6 +1235,20 @@ void refreshVariables()
 }
 void refreshStoredData()
 {
+//	RTC.read(tm);
+//
+//	if(!tm.Hour && !tm.Minute && !tm.Second)
+//	{
+//		tm.Hour = 20;
+//		tm.Minute = 0;
+//		tm.Second = 1;
+//		tm.Day = 24;
+//		tm.Month = 03;
+//		tm.Year = (uint8_t) (2017-1970);
+//		RTC.write(tm);
+//	}
+
+
 	stateMode = eeprom_read_byte((uint8_t *)(addr_stateMode));
 
 	waitPowerOn_min_standBy = eeprom_read_byte((uint8_t *)(addr_standBy_min));
@@ -1145,6 +1279,16 @@ void refreshStoredData()
 }
 void handleMessage()
 {
+/*
+ * 0x01 - high pressure
+ * 0x02 - level down
+ * 0x03 - thermal
+ * 0x04 - time out
+ * 0x05 - red time
+ * 0x06 - command line
+ * 0x07 - broke pressure
+*/
+
 /*
 $0X;				Verificar detalhes - Detalhes simples (tempo).
 	$00;			- Detalhes simples (tempo).
@@ -1179,6 +1323,7 @@ $1:h:HHMMSS;		- Ajustes do calendário;
 
 $2:DevName;			- Change bluetooth name;
 	$2:Vassalo;		- Altera o nome do bluetooth para "Vassalo";
+	$2:baud:2;		- Altera baud rate para 1- 9600, 2- 38400; (não implementado)
 
 $3X;				- Acionamento do motor;
 	$31;			- liga o motor;
@@ -1201,6 +1346,7 @@ $6X;				- Modos de funcionamento;
 	$62;			- Liga nos determinados horários estipulados;
 	$63;			- Função para válvula do reservatório;
 	$64;			- Função para motobomba do reservatório;
+	$65;			- Irrigação com proteção alta/baixa pressao e retorna para standby;
 */
 	// Tx - Transmitter
 	if(enableDecode)
@@ -1426,7 +1572,7 @@ $6X;				- Modos de funcionamento;
 					aux[2] = '\0';
 					tm.Second = (uint8_t) atoi(aux);
 
-					RTC.write(tm);
+//					RTC.write(tm);
 					summary_Print(0);
 				}
 				// 	Set-up date -> $1:d:DDMMAAAA;
@@ -1451,7 +1597,7 @@ $6X;				- Modos de funcionamento;
 					aux2[4] = '\0';
 					tm.Year = (uint8_t) (atoi(aux2)-1970);
 
-					RTC.write(tm);
+//					RTC.write(tm);
 
 					summary_Print(0);
 
@@ -1503,9 +1649,9 @@ $6X;				- Modos de funcionamento;
 				aux[2] = '\0';
 				motorCommand = (uint8_t) atoi(aux);
 
-				if (motorCommand && (!motorStatus))
+				if (motorCommand)// && (!motorStatus))
 				{
-					motor_start();
+					motor_start(startTypeK);
 				}
 				else
 				{
@@ -1676,11 +1822,12 @@ int main(void)
 
 	// Initialize arduino hardware requirements.
 	init();
+
 	init_IO();
 	init_Timer1_1Hz();
 	init_ADC();
 	init_WDT();
-	Serial.begin(38400);
+	Serial.begin(38400);//9600);
 	sei();
 
 	summary_Print(8);
@@ -1688,6 +1835,16 @@ int main(void)
 	Serial.println("-std-");
 
 	refreshStoredData();
+
+	if(stateMode == 4)	// 2 bomb working in the same night time;
+	{
+		stateMode = 2;	// goes to simple 1 motor workin
+	}
+
+	if(stateMode == 5)	// Irrigation programmed and power is down;
+	{
+		stateMode = 0;	// goes to standby mode;
+	}
 
 	while (1)
 	{
